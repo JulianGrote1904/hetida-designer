@@ -101,12 +101,8 @@ def main(*, gap_timestamps, replacement_value):
     `gap_timestamps` and values identical to the replacement_value.
     """
 
-    index_of_expected_dtype = pd.api.types.is_datetime64_any_dtype(
-        gap_timestamps.index.dtype
-    )
-    values_of_expected_dtype = pd.api.types.is_datetime64_any_dtype(
-        gap_timestamps.dtype
-    )
+    index_of_expected_dtype = pd.api.types.is_datetime64_any_dtype(gap_timestamps.index.dtype)
+    values_of_expected_dtype = pd.api.types.is_datetime64_any_dtype(gap_timestamps.dtype)
 
     if not index_of_expected_dtype and not values_of_expected_dtype:
         raise ComponentInputValidationException(
@@ -132,9 +128,7 @@ def main(*, gap_timestamps, replacement_value):
         return_series_index = gap_timestamps.index
 
     return {
-        "replacement_value_series": pd.Series(
-            data=replacement_value, index=return_series_index
-        )
+        "replacement_value_series": pd.Series(data=replacement_value, index=return_series_index)
     }
 
 
@@ -142,21 +136,21 @@ TEST_WIRING_FROM_PY_FILE_IMPORT = {
     "input_wirings": [
         {
             "workflow_input_name": "gap_timestamps",
-            "adapter_id": "direct_provisioning",
             "filters": {
-                "value": (
-                    "{\n"
-                    '    "2020-01-01T01:15:27.000Z": 10.0,\n'
-                    '    "2020-01-02T16:20:00.000Z": 20.0,\n'
-                    '    "2020-01-03T08:20:04.000Z": 30.0\n'
-                    "}"
-                )
+                "value": '{\n    "2020-01-01T01:15:27.000Z": 10.0,\n    "2020-01-02T16:20:00.000Z": 20.0,\n    "2020-01-03T08:20:04.000Z": 30.0\n}'
             },
         },
+        {"workflow_input_name": "replacement_value", "filters": {"value": "37.0"}},
+    ]
+}
+RELEASE_WIRING = {
+    "input_wirings": [
         {
-            "workflow_input_name": "replacement_value",
-            "adapter_id": "direct_provisioning",
-            "filters": {"value": "37.0"},
+            "workflow_input_name": "gap_timestamps",
+            "filters": {
+                "value": '{\n    "2020-01-01T01:15:27.000Z": 10.0,\n    "2020-01-02T16:20:00.000Z": 20.0,\n    "2020-01-03T08:20:04.000Z": 30.0\n}'
+            },
         },
-    ],
+        {"workflow_input_name": "replacement_value", "filters": {"value": "37.0"}},
+    ]
 }

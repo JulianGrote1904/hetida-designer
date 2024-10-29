@@ -180,39 +180,29 @@ def check_value_ranges(
     is_included_default_values["_violates_all"] = True
     is_included_default_values["_violates_any"] = False
 
-    is_included_frame = pd.DataFrame(
-        data=is_included_default_values, index=timeseries_data.index
-    )
+    is_included_frame = pd.DataFrame(data=is_included_default_values, index=timeseries_data.index)
 
     for range_name, value_range in value_range_dict.items():
         if value_range.min_value_inclusive is True:
-            is_included_frame[range_name + "_IS_BELOW"] = (
-                timeseries_data < value_range.min_value
-            )
+            is_included_frame[range_name + "_IS_BELOW"] = timeseries_data < value_range.min_value
         else:
-            is_included_frame[range_name + "_IS_BELOW"] = (
-                timeseries_data <= value_range.min_value
-            )
+            is_included_frame[range_name + "_IS_BELOW"] = timeseries_data <= value_range.min_value
 
         if value_range.max_value_inclusive is True:
-            is_included_frame[range_name + "_IS_ABOVE"] = (
-                timeseries_data > value_range.max_value
-            )
+            is_included_frame[range_name + "_IS_ABOVE"] = timeseries_data > value_range.max_value
         else:
-            is_included_frame[range_name + "_IS_ABOVE"] = (
-                timeseries_data >= value_range.max_value
-            )
+            is_included_frame[range_name + "_IS_ABOVE"] = timeseries_data >= value_range.max_value
 
-        is_included_frame[range_name] = (
-            ~is_included_frame[range_name + "_IS_BELOW"]
-        ) & (~is_included_frame[range_name + "_IS_ABOVE"])
+        is_included_frame[range_name] = (~is_included_frame[range_name + "_IS_BELOW"]) & (
+            ~is_included_frame[range_name + "_IS_ABOVE"]
+        )
 
-    is_included_frame["_violates_all"] = (
-        ~is_included_frame[list(value_range_dict.keys())]
-    ).all(axis=1)
-    is_included_frame["_violates_any"] = (
-        ~is_included_frame[list(value_range_dict.keys())]
-    ).any(axis=1)
+    is_included_frame["_violates_all"] = (~is_included_frame[list(value_range_dict.keys())]).all(
+        axis=1
+    )
+    is_included_frame["_violates_any"] = (~is_included_frame[list(value_range_dict.keys())]).any(
+        axis=1
+    )
 
     is_included_frame["_timestamp"] = is_included_frame.index
 
@@ -263,13 +253,10 @@ def main(*, timeseries_data, value_range_dict):
 
     for range_name, value_range in value_range_dict.items():
         if range_name.endswith(("_IS_BELOW", "_IS_ABOVE")):
-            error_dict[
-                range_name
-            ] = "Range names must not end with '_IS_BELOW' or '_IS_ABOVE'! "
+            error_dict[range_name] = "Range names must not end with '_IS_BELOW' or '_IS_ABOVE'! "
         if range_name in ("_violates_all", "_violates_any", "_timestamp"):
             error_dict[range_name] = (
-                "Range names must not be '_violates_all', '_violates_any', or"
-                " '_timestamp'!"
+                "Range names must not be '_violates_all', '_violates_any', or" " '_timestamp'!"
             )
         try:
             value_ranges[range_name] = ValueRange(**value_range)
@@ -280,54 +267,44 @@ def main(*, timeseries_data, value_range_dict):
         raise ComponentInputValidationException(
             "There were input validation errors for the value_range_dict:\n"
             + "\n".join(
-                range_name + ": " + error_string
-                for range_name, error_string in error_dict.items()
+                range_name + ": " + error_string for range_name, error_string in error_dict.items()
             ),
             error_code=422,
             invalid_component_inputs=["value_range_dict"],
         )
 
-    return {
-        "is_included_frame": check_value_ranges(timeseries_data_no_nan, value_ranges)
-    }
+    return {"is_included_frame": check_value_ranges(timeseries_data_no_nan, value_ranges)}
 
 
 TEST_WIRING_FROM_PY_FILE_IMPORT = {
     "input_wirings": [
         {
             "workflow_input_name": "timeseries_data",
-            "adapter_id": "direct_provisioning",
             "filters": {
-                "value": (
-                    "{\n"
-                    '    "2020-01-01T01:15:27.000Z": 10.0,\n'
-                    '    "2020-01-02T16:20:00.000Z": 20.0,\n'
-                    '    "2020-01-03T08:20:04.000Z": 30.0\n'
-                    "}"
-                )
+                "value": '{\n    "2020-01-01T01:15:27.000Z": 10.0,\n    "2020-01-02T16:20:00.000Z": 20.0,\n    "2020-01-03T08:20:04.000Z": 30.0\n}'
             },
         },
         {
             "workflow_input_name": "value_range_dict",
-            "adapter_id": "direct_provisioning",
             "filters": {
-                "value": (
-                    "{\n"
-                    '    "[10,20]": {\n'
-                    '        "min_value": 10.0,\n'
-                    '        "max_value": 20.0,\n'
-                    '        "min_value_inclusive": true,\n'
-                    '        "max_value_inclusive": true\n'
-                    "    },\n"
-                    '    "(20,30)": {\n'
-                    '        "min_value": 20.0,\n'
-                    '        "max_value": 30.0,\n'
-                    '        "min_value_inclusive": false,\n'
-                    '        "max_value_inclusive": false\n'
-                    "    }\n"
-                    "}"
-                )
+                "value": '{\n    "[10,20]": {\n        "min_value": 10.0,\n        "max_value": 20.0,\n        "min_value_inclusive": true,\n        "max_value_inclusive": true\n    },\n    "(20,30)": {\n        "min_value": 20.0,\n        "max_value": 30.0,\n        "min_value_inclusive": false,\n        "max_value_inclusive": false\n    }\n}'
             },
         },
-    ],
+    ]
+}
+RELEASE_WIRING = {
+    "input_wirings": [
+        {
+            "workflow_input_name": "timeseries_data",
+            "filters": {
+                "value": '{\n    "2020-01-01T01:15:27.000Z": 10.0,\n    "2020-01-02T16:20:00.000Z": 20.0,\n    "2020-01-03T08:20:04.000Z": 30.0\n}'
+            },
+        },
+        {
+            "workflow_input_name": "value_range_dict",
+            "filters": {
+                "value": '{\n    "[10,20]": {\n        "min_value": 10.0,\n        "max_value": 20.0,\n        "min_value_inclusive": true,\n        "max_value_inclusive": true\n    },\n    "(20,30)": {\n        "min_value": 20.0,\n        "max_value": 30.0,\n        "min_value_inclusive": false,\n        "max_value_inclusive": false\n    }\n}'
+            },
+        },
+    ]
 }

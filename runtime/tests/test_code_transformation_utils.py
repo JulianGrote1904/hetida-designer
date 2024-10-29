@@ -72,9 +72,7 @@ def test_get_global_from_code_with_it(expanded_component_code: str):
 
 
 def test_get_global_from_code_without_it(reduced_component_code: str):
-    value_of_gobal = get_global_from_code(
-        reduced_component_code, "TEST_WIRING_FROM_PY_FILE_IMPORT"
-    )
+    value_of_gobal = get_global_from_code(reduced_component_code, "TEST_WIRING_FROM_PY_FILE_IMPORT")
     assert value_of_gobal is None
 
 
@@ -82,9 +80,7 @@ def test_get_global_from_code_with_invalid_syntax(
     component_code_with_syntax_error: str,
 ):
     with pytest.raises(CodeParsingException):
-        get_global_from_code(
-            component_code_with_syntax_error, "TEST_WIRING_FROM_PY_FILE_IMPORT"
-        )
+        get_global_from_code(component_code_with_syntax_error, "TEST_WIRING_FROM_PY_FILE_IMPORT")
 
 
 def test_add_module_level_variable(reduced_component_code: str):
@@ -96,7 +92,7 @@ def test_add_module_level_variable(reduced_component_code: str):
 
 
 def test_update_module_level_variable(expanded_component_code: str):
-    assert '"adapter_id": "direct_provisioning"' in expanded_component_code
+    assert '"workflow_input_name": "scores"' in expanded_component_code
 
     updated_code = update_module_level_variable(
         code=expanded_component_code,
@@ -104,7 +100,7 @@ def test_update_module_level_variable(expanded_component_code: str):
         value={"input_wirings": []},
     )
 
-    assert '"adapter_id": "direct_provisioning"' not in updated_code
+    assert '"workflow_input_name": "scores"' not in updated_code
     assert 'TEST_WIRING_FROM_PY_FILE_IMPORT = {"input_wirings": []}\n' in updated_code
 
 
@@ -112,13 +108,8 @@ def test_update_one_of_two_module_level_variable_assignments(
     expanded_component_code: str,
 ):
     second_test_wiring = """TEST_WIRING_FROM_PY_FILE_IMPORT = {"input_wirings": []}\n"""
-    expanded_component_code_with_second_test_wiring = (
-        expanded_component_code + second_test_wiring
-    )
-    assert (
-        '"adapter_id": "direct_provisioning"'
-        in expanded_component_code_with_second_test_wiring
-    )
+    expanded_component_code_with_second_test_wiring = expanded_component_code + second_test_wiring
+    assert '"workflow_input_name": "scores"' in expanded_component_code_with_second_test_wiring
     assert (
         'TEST_WIRING_FROM_PY_FILE_IMPORT = {"input_wirings": []}\n'
         in expanded_component_code_with_second_test_wiring
@@ -130,10 +121,8 @@ def test_update_one_of_two_module_level_variable_assignments(
         value={},
     )
 
-    assert '"adapter_id": "direct_provisioning"' not in updated_code
-    assert (
-        'TEST_WIRING_FROM_PY_FILE_IMPORT = {"input_wirings": []}\n' not in updated_code
-    )
+    assert '"workflow_input_name": "scores"' not in updated_code
+    assert 'TEST_WIRING_FROM_PY_FILE_IMPORT = {"input_wirings": []}\n' not in updated_code
     assert "TEST_WIRING_FROM_PY_FILE_IMPORT = {" + "}\n" in updated_code
 
 
@@ -148,7 +137,7 @@ def test_update_module_level_variable_with_same_variable_in_function_scope(
         )
     )
     assert (
-        '"adapter_id": "direct_provisioning"'
+        '"workflow_input_name": "scores"'
         in expanded_component_code_with_second_test_wiring_in_function_scope
     )
     assert (
@@ -162,7 +151,7 @@ def test_update_module_level_variable_with_same_variable_in_function_scope(
         value={},
     )
 
-    assert '"adapter_id": "direct_provisioning"' not in updated_code
+    assert '"workflow_input_name": "scores"' not in updated_code
     assert 'TEST_WIRING_FROM_PY_FILE_IMPORT = {"input_wirings": []}\n' in updated_code
     assert "TEST_WIRING_FROM_PY_FILE_IMPORT = {" + "}\n" in updated_code
 
@@ -187,3 +176,37 @@ def test_update_module_level_variable_with_unsuitable_value(
             variable_name="TEST_WIRING_FROM_PY_FILE_IMPORT",
             value=str,
         )
+
+
+def test_update_module_level_variable_keeping_other_assignments(expanded_component_code: str):
+    code_with_following_assignments = (
+        expanded_component_code
+        + """
+
+TEST_WIRING_FROM_PY_FILE_IMPORT = "global_assignment_after"
+
+some_other_global_variable = "some_other_global_variable_assignment"
+
+
+def my_func():
+    TEST_WIRING_FROM_PY_FILE_IMPORT = "non_global_assignment_one"
+    assert len("assert_is_there") > 0
+    TEST_WIRING_FROM_PY_FILE_IMPORT = "non_global_assignment_two"
+    some_other_non_global_variable = "some_other_non_global_variable_assignment"
+    """
+    )
+
+    updated_code = update_module_level_variable(
+        code=code_with_following_assignments,
+        variable_name="TEST_WIRING_FROM_PY_FILE_IMPORT",
+        value={},
+    )
+
+    assert "global_assignment_after" not in updated_code
+
+    assert "some_other_global_variable_assignment" in updated_code
+
+    assert "non_global_assignment_one" in updated_code
+    assert "non_global_assignment_two" in updated_code
+
+    assert "some_other_non_global_variable_assignment" in updated_code

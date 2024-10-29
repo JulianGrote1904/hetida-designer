@@ -1,3 +1,23 @@
+## 0.9.8
+* Add Kafka adapter to send and receive data via Kafka individually per input/output. See [docs](./docs/adapter_system/kafka_adapter.md).
+* Some frontend bug fixes
+
+## 0.9.7
+* Log execution performance metrics
+* UI: Add deep links to (multiple) workflows and components
+* Allow to provide parsing options for manual input / direct_provisioning adapter for Pandas-like data. In particular this allows to choose other orients of the json representation, like "split". "split" is relevant for SERIES objects since it allows to enter series data with duplicate entries in the index, which is otherwise not possible.
+  * **BREAKING_CHANGE**: For SERIES objects hetida designer now outputs the wrapped format with `orient="split"` parsing option to guarantee inclusion of duplicate indices for "direct_provisioning" output wirings.
+* Add url parameters to multiple trafo put and get endpoints for more fine-granular test wiring stripping. Use this for example when transfering trafos between instanced where adapters are
+not present on the target system
+* Several new components and example workflows
+* Add an --add parameter to hdctl which allows to add files to an existing export directory
+  instead of overwriting the whole directory every time.
+
+## 0.9.6
+* fix receiving duplicates with inlcude_dependencies param in trafo GET endpoints
+* expand_component_code now also supports adding test wirings to code with non direct_provisioning adapters
+* add instance support for non-sync commands in hdctl
+
 ## 0.9.5
 * Add hdctl sync feature, allowing for comfortable "hybrid development" of component code,  i.e. switching frequently between working locally in your IDE and development in the hetida designer UI. Among other things this enables and streamlines several aspects of component/workflow development and operations tasks:
   * Keep your components/workflows versioned in a git repo.

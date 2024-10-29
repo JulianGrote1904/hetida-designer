@@ -13,8 +13,17 @@ on registering your own data adapters.
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable
-from typing import Any, TypedDict
+from typing import Any
 
+from hetdesrun.adapters.base import (
+    SINK_ADAPTERS,
+    SOURCE_ADAPTERS,
+    ClientWiringInvalidErrorTuple,
+    ConnectionErrorTuple,
+    OutputDataErrorTuple,
+    SinkAdapter,
+    SourceAdapter,
+)
 from hetdesrun.adapters.exceptions import (  # noqa: F401
     AdapterClientWiringInvalidError,
     AdapterConnectionError,
@@ -30,41 +39,7 @@ from hetdesrun.adapters.sink.direct_provisioning import send_directly_provisione
 from hetdesrun.adapters.source.direct_provisioning import load_directly_provisioned_data
 from hetdesrun.models.data_selection import FilteredSink, FilteredSource
 
-ConnectionErrorTuple = (
-    tuple[type[AdapterConnectionError]]
-    | tuple[type[AdapterConnectionError], type[Exception]]
-)
-
-OutputDataErrorTuple = (
-    tuple[type[AdapterOutputDataError]]
-    | tuple[type[AdapterOutputDataError], type[Exception]]
-)
-
-ClientWiringInvalidErrorTuple = (
-    tuple[type[AdapterClientWiringInvalidError]]
-    | tuple[type[AdapterClientWiringInvalidError], type[Exception]]
-)
-
 logger = logging.getLogger(__name__)
-
-
-class SourceAdapter(TypedDict):
-    load_sources_func: Callable
-    connection_error_classes: ConnectionErrorTuple
-    output_data_error_classes: OutputDataErrorTuple
-    client_wiring_invalid_error_classes: ClientWiringInvalidErrorTuple
-
-
-class SinkAdapter(TypedDict):
-    send_sinks_func: Callable
-    connection_error_classes: ConnectionErrorTuple
-    output_data_error_classes: OutputDataErrorTuple
-    client_wiring_invalid_error_classes: ClientWiringInvalidErrorTuple
-
-
-SOURCE_ADAPTERS: dict[int | str, SourceAdapter] = {}
-
-SINK_ADAPTERS: dict[int | str, SinkAdapter] = {}
 
 
 def prepare_exc_classes(
@@ -199,9 +174,7 @@ register_sink_adapter(
 
 # Registering local file adapter
 
-register_source_adapter(
-    adapter_key="local-file-adapter", load_func=local_file_load_data
-)
+register_source_adapter(adapter_key="local-file-adapter", load_func=local_file_load_data)
 
 register_sink_adapter(adapter_key="local-file-adapter", send_func=local_file_send_data)
 
@@ -258,15 +231,11 @@ async def load_data_from_adapter(
     except adapter["connection_error_classes"] as e:
         if isinstance(e, AdapterConnectionError):
             raise e
-        raise AdapterConnectionError(
-            f"Adapter Client specific connection error:\n{str(e)}"
-        ) from e
+        raise AdapterConnectionError(f"Adapter Client specific connection error:\n{str(e)}") from e
     except adapter["output_data_error_classes"] as e:
         if isinstance(e, AdapterOutputDataError):
             raise e
-        raise AdapterOutputDataError(
-            f"Adapter Client specific output data error:\n{str(e)}"
-        ) from e
+        raise AdapterOutputDataError(f"Adapter Client specific output data error:\n{str(e)}") from e
     except adapter["client_wiring_invalid_error_classes"] as e:
         if isinstance(e, AdapterClientWiringInvalidError):
             raise e
@@ -307,15 +276,11 @@ async def send_data_with_adapter(
     except adapter["connection_error_classes"] as e:
         if isinstance(e, AdapterConnectionError):
             raise e
-        raise AdapterConnectionError(
-            f"Adapter Client specific connection error:\n{str(e)}"
-        ) from e
+        raise AdapterConnectionError(f"Adapter Client specific connection error:\n{str(e)}") from e
     except adapter["output_data_error_classes"] as e:
         if isinstance(e, AdapterOutputDataError):
             raise e
-        raise AdapterOutputDataError(
-            f"Adapter Client specific output data error:\n{str(e)}"
-        ) from e
+        raise AdapterOutputDataError(f"Adapter Client specific output data error:\n{str(e)}") from e
     except adapter["client_wiring_invalid_error_classes"] as e:
         if isinstance(e, AdapterClientWiringInvalidError):
             raise e

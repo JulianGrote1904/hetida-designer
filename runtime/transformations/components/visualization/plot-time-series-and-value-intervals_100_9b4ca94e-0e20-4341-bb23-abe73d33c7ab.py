@@ -156,9 +156,7 @@ def plot_series_and_ranges(
     fill_color: str,
 ) -> go.Figure:
     series_to_plot = series.sort_index()
-    fig = go.Figure(
-        [go.Scatter(x=series_to_plot.index, y=series_to_plot, mode="lines+markers")]
-    )
+    fig = go.Figure([go.Scatter(x=series_to_plot.index, y=series_to_plot, mode="lines+markers")])
 
     time_delta = series_to_plot.index.max() - series_to_plot.index.min()
     num_intervals = len(interval_dict)
@@ -172,21 +170,15 @@ def plot_series_and_ranges(
             x1=series_to_plot.index.max(),
             y1=interval_value.max_value,
             line={
-                "color": interval_value.line_color
-                or interval_value.fill_color
-                or line_color,
+                "color": interval_value.line_color or interval_value.fill_color or line_color,
                 "width": 1,
             },
             fillcolor=interval_value.fill_color or fill_color,
         )
 
     # adds a colored vertical line and a label for each value interval
-    for interval_index, (interval_key, interval_value) in enumerate(
-        interval_dict.items()
-    ):
-        x = series_to_plot.index.min() + (interval_index + 1) * time_delta / (
-            num_intervals * 12
-        )
+    for interval_index, (interval_key, interval_value) in enumerate(interval_dict.items()):
+        x = series_to_plot.index.min() + (interval_index + 1) * time_delta / (num_intervals * 12)
 
         fig.add_shape(
             type="line",
@@ -195,9 +187,7 @@ def plot_series_and_ranges(
             x1=x,
             y1=interval_value.max_value,
             line={
-                "color": interval_value.line_color
-                or interval_value.fill_color
-                or line_color,
+                "color": interval_value.line_color or interval_value.fill_color or line_color,
                 "width": 2,
             },
             label={
@@ -304,43 +294,31 @@ TEST_WIRING_FROM_PY_FILE_IMPORT = {
     "input_wirings": [
         {
             "workflow_input_name": "series",
-            "adapter_id": "direct_provisioning",
             "filters": {
-                "value": (
-                    "{\n"
-                    '    "2020-01-01T01:15:27.000Z": 42.0,\n'
-                    '    "2020-01-01T16:20:00.000Z": 16.1,\n'
-                    '    "2020-01-02T08:20:00.000Z": 27.0,\n'
-                    '    "2020-01-02T16:20:00.000Z": 2.6,\n'
-                    '    "2020-01-03T08:20:04.000Z": 25.9\n'
-                    "}"
-                )
+                "value": '{\n    "2020-01-01T01:15:27.000Z": 42.0,\n    "2020-01-01T16:20:00.000Z": 16.1,\n    "2020-01-02T08:20:00.000Z": 27.0,\n    "2020-01-02T16:20:00.000Z": 2.6,\n    "2020-01-03T08:20:04.000Z": 25.9\n}'  # noqa: E501
             },
         },
         {
             "workflow_input_name": "value_interval_dict",
-            "adapter_id": "direct_provisioning",
             "filters": {
-                "value": (
-                    "{\n"
-                    '    "[10,20]": {\n'
-                    '        "min_value": 10.0,\n'
-                    '        "max_value": 20.0,\n'
-                    '        "min_value_inclusive": true,\n'
-                    '        "max_value_inclusive": true,\n'
-                    '        "display_name": "Intv. 1"\n'
-                    "    },\n"
-                    '    "(20,30)": {\n'
-                    '        "min_value": 20.0,\n'
-                    '        "max_value": 30.0,\n'
-                    '        "min_value_inclusive": false,\n'
-                    '        "max_value_inclusive": false,\n'
-                    '        "line_color": "rgb(40,20,250)",\n'
-                    '        "fill_color": "rgba(40,20,250,0.15)"\n'
-                    "    }\n"
-                    "}"
-                )
+                "value": '{\n    "[10,20]": {\n        "min_value": 10.0,\n        "max_value": 20.0,\n        "min_value_inclusive": true,\n        "max_value_inclusive": true,\n        "display_name": "Intv. 1"\n    },\n    "(20,30)": {\n        "min_value": 20.0,\n        "max_value": 30.0,\n        "min_value_inclusive": false,\n        "max_value_inclusive": false,\n        "line_color": "rgb(40,20,250)",\n        "fill_color": "rgba(40,20,250,0.15)"\n    }\n}'  # noqa: E501
             },
         },
-    ],
+    ]
+}
+RELEASE_WIRING = {
+    "input_wirings": [
+        {
+            "workflow_input_name": "series",
+            "filters": {
+                "value": '{\n    "2020-01-01T01:15:27.000Z": 42.0,\n    "2020-01-01T16:20:00.000Z": 16.1,\n    "2020-01-02T08:20:00.000Z": 27.0,\n    "2020-01-02T16:20:00.000Z": 2.6,\n    "2020-01-03T08:20:04.000Z": 25.9\n}'  # noqa: E501
+            },
+        },
+        {
+            "workflow_input_name": "value_interval_dict",
+            "filters": {
+                "value": '{\n    "[10,20]": {\n        "min_value": 10.0,\n        "max_value": 20.0,\n        "min_value_inclusive": true,\n        "max_value_inclusive": true,\n        "display_name": "Intv. 1"\n    },\n    "(20,30)": {\n        "min_value": 20.0,\n        "max_value": 30.0,\n        "min_value_inclusive": false,\n        "max_value_inclusive": false,\n        "line_color": "rgb(40,20,250)",\n        "fill_color": "rgba(40,20,250,0.15)"\n    }\n}'  # noqa: E501
+            },
+        },
+    ]
 }

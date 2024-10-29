@@ -32,9 +32,7 @@ restricted_transformation_router = HandleTrailingSlashAPIRouter(
     summary="Executes a transformation revision",
     status_code=status.HTTP_200_OK,
     responses={
-        status.HTTP_200_OK: {
-            "description": "Successfully executed the transformation revision"
-        }
+        status.HTTP_200_OK: {"description": "Successfully executed the transformation revision"}
     },
 )
 async def restricted_execute_transformation_revision_endpoint(
@@ -48,8 +46,6 @@ async def restricted_execute_transformation_revision_endpoint(
     The test wiring will not be updated.
     """
 
-    # TODO: Maybe this endpoint should cache at least released trafos?
-
     if exec_by_id.id not in get_config().restrict_to_trafo_exec_service:
         msg = (
             f"Restricted execution called with a trafo id {str(exec_by_id.id)} which "
@@ -58,8 +54,6 @@ async def restricted_execute_transformation_revision_endpoint(
         logger.warning(msg)
         raise HTTPException(status.HTTP_403_FORBIDDEN, detail=msg)
 
-    logger.debug(
-        "Restricted execution called with allowed trafo id %s.", str(exec_by_id.id)
-    )
+    logger.debug("Restricted execution called with allowed trafo id %s.", str(exec_by_id.id))
 
     return await handle_trafo_revision_execution_request(exec_by_id)

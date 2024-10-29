@@ -176,14 +176,10 @@ def main(*, series, list_of_time_intervals):
         end_inclusive = interval.end_inclusive
 
         above_start = (
-            timestamps >= interval.start
-            if start_inclusive
-            else timestamps > interval.start
+            timestamps >= interval.start if start_inclusive else timestamps > interval.start
         )
 
-        below_end = (
-            timestamps <= interval.end if end_inclusive else timestamps < interval.end
-        )
+        below_end = timestamps <= interval.end if end_inclusive else timestamps < interval.end
 
         in_interval = pd.Series(above_start & below_end, index=timestamps)
         in_intervals = in_intervals | in_interval
@@ -195,38 +191,31 @@ TEST_WIRING_FROM_PY_FILE_IMPORT = {
     "input_wirings": [
         {
             "workflow_input_name": "series",
-            "adapter_id": "direct_provisioning",
             "filters": {
-                "value": (
-                    "{\n"
-                    '    "2020-01-01T01:15:27.000Z": 42.2,\n'
-                    '    "2020-01-03T08:20:03.000Z": 18.7,\n'
-                    '    "2020-01-03T08:20:04.000Z": 25.9\n'
-                    "}"
-                )
+                "value": '{\n    "2020-01-01T01:15:27.000Z": 42.2,\n    "2020-01-03T08:20:03.000Z": 18.7,\n    "2020-01-03T08:20:04.000Z": 25.9\n}'
             },
         },
         {
             "workflow_input_name": "list_of_time_intervals",
-            "adapter_id": "direct_provisioning",
             "filters": {
-                "value": (
-                    "[\n"
-                    "    {\n"
-                    '        "start": "2020-01-01T01:15:27.000Z",\n'
-                    '        "end": "2020-01-01T01:15:27.000Z",\n'
-                    '        "start_inclusive": true,\n'
-                    '        "end_inclusive": true\n'
-                    "    },\n"
-                    "    {\n"
-                    '        "start": "2020-01-03T08:20:02.000Z",\n'
-                    '        "end": "2020-01-03T08:20:04.000Z",\n'
-                    '        "start_inclusive": false,\n'
-                    '        "end_inclusive": false\n'
-                    "    }\n"
-                    "]"
-                )
+                "value": '[\n    {\n        "start": "2020-01-01T01:15:27.000Z",\n        "end": "2020-01-01T01:15:27.000Z",\n        "start_inclusive": true,\n        "end_inclusive": true\n    },\n    {\n        "start": "2020-01-03T08:20:02.000Z",\n        "end": "2020-01-03T08:20:04.000Z",\n        "start_inclusive": false,\n        "end_inclusive": false\n    }\n]'
             },
         },
-    ],
+    ]
+}
+RELEASE_WIRING = {
+    "input_wirings": [
+        {
+            "workflow_input_name": "series",
+            "filters": {
+                "value": '{\n    "2020-01-01T01:15:27.000Z": 42.2,\n    "2020-01-03T08:20:03.000Z": 18.7,\n    "2020-01-03T08:20:04.000Z": 25.9\n}'
+            },
+        },
+        {
+            "workflow_input_name": "list_of_time_intervals",
+            "filters": {
+                "value": '[\n    {\n        "start": "2020-01-01T01:15:27.000Z",\n        "end": "2020-01-01T01:15:27.000Z",\n        "start_inclusive": true,\n        "end_inclusive": true\n    },\n    {\n        "start": "2020-01-03T08:20:02.000Z",\n        "end": "2020-01-03T08:20:04.000Z",\n        "start_inclusive": false,\n        "end_inclusive": false\n    }\n]'
+            },
+        },
+    ]
 }

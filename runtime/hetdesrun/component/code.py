@@ -4,6 +4,7 @@ This module contains functions for generating and updating component code module
 to provide a very elementary support system to the designer code editor.
 """
 
+import json
 import logging
 from keyword import iskeyword
 
@@ -137,10 +138,8 @@ def format_function_header(function_header: str) -> str:
         function_header + function_body_template
     )
     # remove function_body_template again
-    formatted_function_header = (
-        formatted_function_header_with_body_template.removesuffix(
-            function_body_template
-        )
+    formatted_function_header = formatted_function_header_with_body_template.removesuffix(
+        function_body_template
     )
     return formatted_function_header
 
@@ -152,9 +151,24 @@ def description_too_long(description: str) -> bool:
     return len(description) > 77
 
 
-def generate_function_header(
-    component: TransformationRevision, is_coroutine: bool = False
-) -> str:
+def default_value_part(inp: TransformationInput) -> str:
+    if inp.type != InputType.OPTIONAL:
+        return ""
+
+    try:
+        default_value_rep_part = component_info_default_value_string(inp)
+    except TypeError as e:
+        msg = (
+            f"Could not generate default value string representation for input {inp.name}."
+            f" Error was:\n{str(e)}"
+        )
+        logger.warning(msg)
+        return ""
+
+    return ', "default_value": ' + default_value_rep_part
+
+
+def generate_function_header(component: TransformationRevision, is_coroutine: bool = False) -> str:
     """Generate entrypoint function header from the inputs and their types"""
     param_list_str = (
         ""
@@ -186,11 +200,7 @@ def generate_function_header(
                 + '": {"data_type": "'
                 + inp.data_type.value
                 + '"'
-                + (
-                    ', "default_value": ' + component_info_default_value_string(inp)
-                    if inp.type == InputType.OPTIONAL
-                    else ""
-                )
+                + (default_value_part(inp))
                 + "},\n    "
                 for inp in component.io_interface.inputs
                 if inp.name is not None
@@ -204,11 +214,7 @@ def generate_function_header(
         + ("\n    " if len(component.io_interface.outputs) != 0 else "")
         + "".join(
             [
-                '    "'
-                + output.name
-                + '": {"data_type": "'
-                + output.data_type.value
-                + '"},\n    '
+                '    "' + output.name + '": {"data_type": "' + output.data_type.value + '"},\n    '
                 for output in component.io_interface.outputs
                 if output.name is not None
             ]
@@ -311,9 +317,7 @@ def update_code(
     new_function_header = generate_function_header(tr)
 
     try:
-        start, remaining = existing_code.split(
-            "# ***** DO NOT EDIT LINES BELOW *****", 1
-        )
+        start, remaining = existing_code.split("# ***** DO NOT EDIT LINES BELOW *****", 1)
     except ValueError:
         # Cannot find func def, therefore append it (assuming necessary imports are present):
         # This may secretely add a second main entrypoint function!
@@ -327,14 +331,12 @@ def update_code(
 
     # we now are quite sure that we find a complete existing function definition
 
-    old_func_def, end = remaining.split(
-        "    # ***** DO NOT EDIT LINES ABOVE *****\n", 1
-    )
+    old_func_def, end = remaining.split("    # ***** DO NOT EDIT LINES ABOVE *****\n", 1)
 
     old_func_def_lines = old_func_def.split("\n")
-    use_async_def = (len(old_func_def_lines) >= 3) and old_func_def_lines[
-        -3
-    ].startswith("async def")
+    use_async_def = (len(old_func_def_lines) >= 3) and old_func_def_lines[-3].startswith(
+        "async def"
+    )
     is_coroutine = use_async_def
 
     new_function_header = generate_function_header(tr, is_coroutine)
@@ -342,18 +344,12 @@ def update_code(
     return start + new_function_header + end
 
 
-def add_documentation_as_module_doc_string(
-    code: str, tr: TransformationRevision
-) -> str:
+def add_documentation_as_module_doc_string(code: str, tr: TransformationRevision) -> str:
     if code.startswith('"""'):
         return code
 
     mod_doc_string = (
-        '"""Documentation for '
-        + tr.name
-        + "\n\n"
-        + tr.documentation.strip()
-        + '\n"""\n\n'
+        '"""Documentation for ' + tr.name + "\n\n" + tr.documentation.strip() + '\n"""\n\n'
     )
 
     return mod_doc_string + code
@@ -364,12 +360,33 @@ def add_test_wiring_dictionary(code: str, tr: TransformationRevision) -> str:
         expanded_code = update_module_level_variable(
             code=code,
             variable_name="TEST_WIRING_FROM_PY_FILE_IMPORT",
-            value=tr.test_wiring.dict(exclude_unset=True, exclude_defaults=True),
+            value=json.loads(tr.test_wiring.json(exclude_unset=True, exclude_defaults=True)),
         )
-    except CodeParsingException:
+    except CodeParsingException as e:
         msg = (
             f"Failed to update test wiring in code for trafo {tr.name} ({tr.version_tag})"
-            f"(id: {str(tr.id)}). Returning non-updated code."
+            f"(id: {str(tr.id)}). Returning non-updated code. Error was: {str(e)}"
+        )
+        logger.warning(msg)
+        return code
+    return expanded_code
+
+
+def add_release_wiring_dictionary(code: str, tr: TransformationRevision) -> str:
+    try:
+        expanded_code = update_module_level_variable(
+            code=code,
+            variable_name="RELEASE_WIRING",
+            value=json.loads(
+                tr.release_wiring.json(exclude_unset=True, exclude_defaults=True)
+                if tr.release_wiring is not None
+                else "null"
+            ),
+        )
+    except CodeParsingException as e:
+        msg = (
+            f"Failed to update release wiring in code for trafo {tr.name} ({tr.version_tag})"
+            f"(id: {str(tr.id)}). Returning non-updated code. Error was: {str(e)}"
         )
         logger.warning(msg)
         return code
@@ -379,11 +396,13 @@ def add_test_wiring_dictionary(code: str, tr: TransformationRevision) -> str:
 def expand_code(
     tr: TransformationRevision,
 ) -> str:
-    """Add documentation and test wiring to component code
+    """Add documentation and test wiring and release wiring to component code
 
     Add the documentation as module docstring at the top of the component code.
 
     Add test_wiring as dictionary at the end of the component code.
+
+    Add release_wiring as dictionary at the end of the component code.
     """
 
     if tr.type != Type.COMPONENT:
@@ -400,6 +419,7 @@ def expand_code(
 
     expanded_code = add_documentation_as_module_doc_string(existing_code, tr)
     expanded_code = add_test_wiring_dictionary(expanded_code, tr)
+    expanded_code = add_release_wiring_dictionary(expanded_code, tr)
 
     try:
         return format_code_with_black(expanded_code)

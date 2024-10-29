@@ -2,29 +2,35 @@
 
 import json
 import logging
+import os
+from copy import deepcopy
 from posixpath import join as posix_urljoin
 from uuid import UUID, uuid4
 
 import httpx
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import ValidationError
 
 from hetdesrun.backend.models.info import ExecutionResponseFrontendDto
 from hetdesrun.models.component import ComponentNode
+from hetdesrun.models.execution import ExecByIdInput
 from hetdesrun.models.run import (
     ConfigurationInput,
     PerformanceMeasuredStep,
     WorkflowExecutionInput,
     WorkflowExecutionResult,
 )
-from hetdesrun.models.wiring import WorkflowWiring
 from hetdesrun.models.workflow import WorkflowNode
 from hetdesrun.persistence.dbservice.exceptions import DBIntegrityError, DBNotFoundError
 from hetdesrun.persistence.dbservice.revision import (
     get_all_nested_transformation_revisions,
     read_single_transformation_revision,
+    read_single_transformation_revision_with_caching,
 )
 from hetdesrun.persistence.models.transformation import TransformationRevision
 from hetdesrun.persistence.models.workflow import WorkflowContent
+from hetdesrun.reference_context import (
+    set_reproducibility_reference_context,
+)
 from hetdesrun.runtime.logging import execution_context_filter
 from hetdesrun.runtime.service import runtime_service
 from hetdesrun.utils import Type
@@ -34,61 +40,6 @@ from hetdesrun.webservice.config import get_config
 
 logger = logging.getLogger(__name__)
 logger.addFilter(execution_context_filter)
-
-
-class ExecByIdInput(BaseModel):
-    id: UUID  # noqa: A003
-    wiring: WorkflowWiring | None = Field(
-        None,
-        description="The wiring to be used. "
-        "If no wiring is provided the stored test wiring will be used.",
-    )
-    run_pure_plot_operators: bool = Field(
-        False, description="Whether pure plot components should be run."
-    )
-    job_id: UUID = Field(
-        default_factory=uuid4,
-        description=(
-            "Id to identify an individual execution job, "
-            "will be generated if it is not provided."
-        ),
-    )
-
-
-class ExecLatestByGroupIdInput(BaseModel):
-    """Payload for execute-latest kafka endpoint
-
-    WARNING: Even when this input is not changed, the execution response might change if a new
-    latest transformation revision exists.
-
-    WARNING: The inputs and outputs may be different for different revisions. In such a case,
-    executing the last revision with the same input as before will not work, but will result in
-    errors.
-
-    The latest transformation will be determined by the released_timestamp of the released revisions
-    of the revision group which are stored in the database.
-
-    This transformation will be loaded from the DB and executed with the wiring sent with this
-    payload.
-    """
-
-    revision_group_id: UUID
-    wiring: WorkflowWiring
-    run_pure_plot_operators: bool = Field(
-        False, description="Whether pure plot components should be run."
-    )
-    job_id: UUID = Field(
-        default_factory=uuid4,
-        description="Optional job id, that can be used to track an execution job.",
-    )
-
-    def to_exec_by_id(self, id: UUID) -> ExecByIdInput:  # noqa: A002
-        return ExecByIdInput(
-            id=id,
-            wiring=self.wiring,
-            run_pure_plot_operators=self.run_pure_plot_operators,
-            job_id=self.job_id,
-        )
 
 
 class TrafoExecutionError(Exception):
@@ -140,22 +91,16 @@ def nested_nodes(
         for operator in workflow.operators:
             if operator.type == Type.COMPONENT:
                 sub_nodes.append(
-                    tr_operators[operator.id].to_component_node(
-                        operator.id, operator.name
-                    )
+                    tr_operators[operator.id].to_component_node(operator.id, operator.name)
                 )
             if operator.type == Type.WORKFLOW:
                 tr_workflow = tr_operators[operator.id]
                 assert isinstance(  # noqa: S101
                     tr_workflow.content, WorkflowContent
                 )  # hint for mypy
-                operator_ids = [
-                    operator.id for operator in tr_workflow.content.operators
-                ]
+                operator_ids = [operator.id for operator in tr_workflow.content.operators]
                 tr_children = {
-                    id_: all_nested_tr[id_]
-                    for id_ in operator_ids
-                    if id_ in all_nested_tr
+                    id_: all_nested_tr[id_] for id_ in operator_ids if id_ in all_nested_tr
                 }
                 sub_nodes.append(
                     tr_workflow.content.to_workflow_node(
@@ -185,12 +130,17 @@ def prepare_execution_input(exec_by_id_input: ExecByIdInput) -> WorkflowExecutio
     an ad-hoc workflow structure for execution.
     """
     try:
-        transformation_revision = read_single_transformation_revision(
-            exec_by_id_input.id
-        )
-        logger.info(
-            "found transformation revision with id %s", str(exec_by_id_input.id)
-        )
+        if get_config().enable_caching_for_non_draft_trafos_for_execution:
+            transformation_revision = read_single_transformation_revision_with_caching(
+                exec_by_id_input.id
+            )
+            logger.info(
+                "found possibly cached transformation revision with id %s",
+                str(exec_by_id_input.id),
+            )
+        else:
+            transformation_revision = read_single_transformation_revision(exec_by_id_input.id)
+            logger.info("found transformation revision with id %s", str(exec_by_id_input.id))
     except DBNotFoundError as e:
         raise TrafoExecutionNotFoundError() from e
 
@@ -199,9 +149,7 @@ def prepare_execution_input(exec_by_id_input: ExecByIdInput) -> WorkflowExecutio
         assert isinstance(  # noqa: S101
             tr_workflow.content, WorkflowContent
         )  # hint for mypy
-        nested_transformations = {
-            tr_workflow.content.operators[0].id: transformation_revision
-        }
+        nested_transformations = {tr_workflow.content.operators[0].id: transformation_revision}
     else:
         tr_workflow = transformation_revision
         nested_transformations = get_all_nested_transformation_revisions(tr_workflow)
@@ -217,22 +165,23 @@ def prepare_execution_input(exec_by_id_input: ExecByIdInput) -> WorkflowExecutio
     try:
         execution_input = WorkflowExecutionInput(
             code_modules=[
-                tr_component.to_code_module()
-                for tr_component in nested_components.values()
+                tr_component.to_code_module() for tr_component in nested_components.values()
             ],
             components=[
-                component.to_component_revision()
-                for component in nested_components.values()
+                component.to_component_revision() for component in nested_components.values()
             ],
             workflow=workflow_node,
             configuration=ConfigurationInput(
                 name=str(tr_workflow.id),
                 run_pure_plot_operators=exec_by_id_input.run_pure_plot_operators,
             ),
-            workflow_wiring=exec_by_id_input.wiring
-            if exec_by_id_input.wiring is not None
-            else transformation_revision.test_wiring,
+            workflow_wiring=(
+                exec_by_id_input.wiring
+                if exec_by_id_input.wiring is not None
+                else transformation_revision.test_wiring
+            ),
             job_id=exec_by_id_input.job_id,
+            trafo_id=exec_by_id_input.id,
         )
     except ValidationError as e:
         raise TrafoExecutionInputValidationError(e) from e
@@ -255,9 +204,7 @@ async def run_execution_input(
         "run_execution_input"
     )
 
-    output_types = {
-        output.name: output.type for output in execution_input.workflow.outputs
-    }
+    output_types = {output.name: output.type for output in execution_input.workflow.outputs}
 
     execution_result: WorkflowExecutionResult
 
@@ -283,9 +230,7 @@ async def run_execution_input(
                 response = await client.post(
                     url,
                     headers=headers,
-                    json=json.loads(
-                        execution_input.json()
-                    ),  # TODO: avoid double serialization.
+                    json=json.loads(execution_input.json()),  # TODO: avoid double serialization.
                     # see https://github.com/samuelcolvin/pydantic/issues/1409 and
                     # https://github.com/samuelcolvin/pydantic/issues/1409#issuecomment-877175194
                     timeout=None,
@@ -314,9 +259,7 @@ async def run_execution_input(
 
     run_execution_input_measured_step.stop()
 
-    execution_response.measured_steps.run_execution_input = (
-        run_execution_input_measured_step
-    )
+    execution_response.measured_steps.run_execution_input = run_execution_input_measured_step
     return execution_response
 
 
@@ -328,7 +271,14 @@ async def execute_transformation_revision(
     raises subtypes of TrafoExecutionError on errors.
     """
 
+    if exec_by_id_input.job_id is None:
+        exec_by_id_input.job_id = uuid4()
+
     execution_context_filter.bind_context(job_id=exec_by_id_input.job_id)
+
+    # Set the reproducibility reference context to the provided reference of the exec object
+    repr_reference = deepcopy(exec_by_id_input.resolved_reproducibility_references)
+    set_reproducibility_reference_context(repr_reference)
 
     # prepare execution input
 
@@ -341,7 +291,34 @@ async def execute_transformation_revision(
     prep_exec_input_measured_step.stop()
 
     exec_resp_frontend_dto = await run_execution_input(execution_input)
-    exec_resp_frontend_dto.measured_steps.prepare_execution_input = (
-        prep_exec_input_measured_step
-    )
+    exec_resp_frontend_dto.measured_steps.prepare_execution_input = prep_exec_input_measured_step
+
     return exec_resp_frontend_dto
+
+
+async def perf_measured_execute_trafo_rev(
+    exec_by_id: ExecByIdInput,
+) -> ExecutionResponseFrontendDto:
+    """Wraps execution with performance measuring
+
+    Propagates all exceptions (expected: TrafoExecutionError and subclasses).
+    """
+    internal_full_measured_step = PerformanceMeasuredStep.create_and_begin("internal_full")
+
+    # following line may raise exceptions (TrafoExecutionError and subclasses):
+    exec_response = await execute_transformation_revision(exec_by_id)
+
+    internal_full_measured_step.stop()
+    exec_response.measured_steps.internal_full = internal_full_measured_step
+    if get_config().advanced_performance_measurement_active:
+        exec_response.process_id = os.getpid()
+
+    if get_config().log_execution_performance_info:
+        logger.info(
+            "Measured steps for job %s on process with PID %s:\n%s",
+            str(exec_response.job_id),
+            str(exec_response.process_id),
+            str(exec_response.measured_steps),
+        )
+
+    return exec_response

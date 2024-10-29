@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseSettings, Field, Json, SecretStr, validator
 from sqlalchemy.engine import URL as SQLAlchemy_DB_URL
 
+from hetdesrun.models.execution import ExecByIdBase
 from hetdesrun.webservice.auth import FrontendAuthOptions
 from hetdesrun.webservice.auth_outgoing import ServiceCredentials
 
@@ -58,6 +59,12 @@ class RuntimeConfig(BaseSettings):
         ),
     )
 
+    log_execution_performance_info: bool = Field(
+        False,
+        description="Whether performance info (measured steps) are logged.",
+        env="HD_LOG_EXECUTION_PERFORMANCE_INFO",
+    )
+
     swagger_prefix: str = Field(
         "",
         env="OPENAPI_PREFIX",
@@ -104,6 +111,16 @@ class RuntimeConfig(BaseSettings):
             "execution happen in one sacalable containerized service."
         ),
         env="HD_RESTRICT_TO_TRAFO_EXEC_SERVICE",
+    )
+
+    enable_caching_for_non_draft_trafos_for_execution: bool = Field(
+        False,
+        env="HD_ENABLE_CACHING_FOR_NON_DRAFT_TRAFOS_FOR_EXEC",
+        description=(
+            "Cache transformation revisions for execution if their state is not DRAFT."
+            "Instead of always loading them from the database."
+            "The caching mechanism is NOT thread-safe."
+        ),
     )
 
     ensure_db_schema: bool = Field(
@@ -176,7 +193,7 @@ class RuntimeConfig(BaseSettings):
 
     dashboarding_frontend_auth_settings: FrontendAuthOptions = Field(
         FrontendAuthOptions(
-            auth_url="http://localhost:8081/auth/",
+            auth_url="http://localhost:8081/",
             client_id="hetida-designer",
             realm="hetida-designer",
         ),
@@ -188,7 +205,7 @@ class RuntimeConfig(BaseSettings):
     )
 
     auth_public_key_url: str = Field(
-        "http://hetida-designer-keycloak:8080/auth/realms/hetida-designer/protocol/openid-connect/certs",  # noqa: E501
+        "http://hetida-designer-keycloak:8080/realms/hetida-designer/protocol/openid-connect/certs",  # noqa: E501
         description="URL to endpoint providing public keys for verifying bearer token signature",
         env="HD_AUTH_PUBLIC_KEY_URL",
     )
@@ -198,8 +215,7 @@ class RuntimeConfig(BaseSettings):
     auth_role_key: str = Field(
         "roles",
         description=(
-            "Under which key of the access token payload the roles will"
-            " be expected as a list."
+            "Under which key of the access token payload the roles will" " be expected as a list."
         ),
         env="HD_AUTH_ROLE_KEY",
     )
@@ -254,9 +270,7 @@ class RuntimeConfig(BaseSettings):
         ),
         env="HD_INTERNAL_AUTH_MODE",
     )
-    internal_auth_client_credentials: ServiceCredentials | Json[
-        ServiceCredentials
-    ] | None = Field(
+    internal_auth_client_credentials: ServiceCredentials | Json[ServiceCredentials] | None = Field(
         None,
         description=(
             "Client credentials as json encoded string."
@@ -264,7 +278,7 @@ class RuntimeConfig(BaseSettings):
             " file."
         ),
         example=(
-            '{"realm": "my-realm", "auth_url": "https://test.com/auth", "audience": "account",'
+            '{"realm": "my-realm", "auth_url": "https://test.com", "audience": "account",'
             ' "grant_credentials": {"grant_type": "client_credentials", "client_id": "my-client",'
             ' "client_secret": "my client secret"}, "post_client_kwargs": {"verify": false},'
             ' "post_kwargs": {}}'
@@ -281,13 +295,11 @@ class RuntimeConfig(BaseSettings):
         ),
         env="HD_EXTERNAL_AUTH_MODE",
     )
-    external_auth_client_credentials: ServiceCredentials | Json[
-        ServiceCredentials
-    ] | None = Field(
+    external_auth_client_credentials: ServiceCredentials | Json[ServiceCredentials] | None = Field(
         None,
         description="Client credentials as json encoded string.",
         example=(
-            '{"realm": "my-realm", "auth_url": "https://test.com/auth", "audience": "account",'
+            '{"realm": "my-realm", "auth_url": "https://test.com", "audience": "account",'
             ' "grant_credentials": {"grant_type": "client_credentials", "client_id": "my-client",'
             ' "client_secret": "my client secret"}, "post_client_kwargs": {"verify": false},'
             ' "post_kwargs": {}}'
@@ -319,7 +331,13 @@ class RuntimeConfig(BaseSettings):
         "|http://hetida-designer-runtime:8090/adapters/localfile,"
         "sql-adapter|SQL Adapter"
         "|http://localhost:8090/adapters/sql"
-        "|http://localhost:8090/adapters/sql",
+        "|http://localhost:8090/adapters/sql,"
+        "kafka|Kafka Adapter"
+        "|http://localhost:8090/adapters/kafka"
+        "|http://localhost:8090/adapters/kafka,"
+        "external-sources|External Sources"
+        "|http://localhost:8090/adapters/external_sources"
+        "|http://localhost:8090/adapters/external_sources",
         env="HETIDA_DESIGNER_ADAPTERS",
         description="list of the installed adapters",
     )
@@ -330,9 +348,7 @@ class RuntimeConfig(BaseSettings):
         description="URL to runtime",
     )
 
-    hd_runtime_verify_certs: bool = Field(
-        True, env="HETIDA_DESIGNER_RUNTIME_VERIFY_CERTS"
-    )
+    hd_runtime_verify_certs: bool = Field(True, env="HETIDA_DESIGNER_RUNTIME_VERIFY_CERTS")
 
     # For scripts (e.g. transformation deployment)
     hd_backend_api_url: str = Field(
@@ -363,11 +379,20 @@ class RuntimeConfig(BaseSettings):
         env="HETIDA_DESIGNER_BASIC_AUTH_PASSWORD",
         description="Basic Auth User",
     )
-    hd_backend_verify_certs: bool = Field(
-        True, env="HETIDA_DESIGNER_BACKEND_VERIFY_CERTS"
-    )
-    hd_adapters_verify_certs: bool = Field(
-        True, env="HETIDA_DESIGNER_ADAPTERS_VERIFY_CERTS"
+    hd_backend_verify_certs: bool = Field(True, env="HETIDA_DESIGNER_BACKEND_VERIFY_CERTS")
+    hd_adapters_verify_certs: bool = Field(True, env="HETIDA_DESIGNER_ADAPTERS_VERIFY_CERTS")
+
+    hd_kafka_consumption_mode: None | ExecByIdBase = Field(
+        None,
+        description=(
+            "If this is set, all backend, runtime and adapter webservices are deactivated. "
+            "Instead a kafka consumer is started listening on the kafka topic from the kafka "
+            "adapter inputs of the topic/configuration of the provided wiring (exactly one kafka "
+            "config is allowed to occur in the input wirings). Whenever it receives a kafka "
+            "message it will execute the transformation with the wiring forwarding the kafka "
+            "message content into the kafka adapter input wirings."
+        ),
+        env="HETIDA_DESIGNER_KAFKA_CONSUMPTION_MODE",
     )
 
     hd_kafka_consumer_enabled: bool = Field(
@@ -457,9 +482,7 @@ class RuntimeConfig(BaseSettings):
         return v
 
     @validator("maintenance_secret")
-    def maintenance_secret_allowed_characters(
-        cls, v: SecretStr | None
-    ) -> SecretStr | None:
+    def maintenance_secret_allowed_characters(cls, v: SecretStr | None) -> SecretStr | None:
         if v is None:
             return v
         if not maintenance_secret_pattern.fullmatch(v.get_secret_value()):
@@ -498,9 +521,7 @@ class RuntimeConfig(BaseSettings):
                 drivername=values["sqlalchemy_db_drivername"],
                 username=values["sqlalchemy_db_user"],
                 password=(
-                    pw_secret.get_secret_value()
-                    if isinstance(pw_secret, SecretStr)
-                    else pw_secret
+                    pw_secret.get_secret_value() if isinstance(pw_secret, SecretStr) else pw_secret
                 ),
                 host=values["sqlalchemy_db_host"],
                 port=values["sqlalchemy_db_port"],

@@ -8,18 +8,40 @@ import { TransformationType } from 'src/app/enums/transformation-type';
 import { RevisionState } from 'src/app/enums/revision-state';
 import { CopyTransformationDialogComponent } from './copy-transformation-dialog.component';
 import { selectAllTransformations } from 'src/app/store/transformation/transformation.selectors';
+import { RouterTestingModule } from '@angular/router/testing';
+import { ConfigService } from '../../service/configuration/config.service';
+import { of } from 'rxjs';
 
 describe('CopyTransformationDialogComponent', () => {
   let component: CopyTransformationDialogComponent;
   let fixture: ComponentFixture<CopyTransformationDialogComponent>;
+  let mockConfigService: jasmine.SpyObj<ConfigService>;
+
+  const createConfigServiceMock = () =>
+    jasmine.createSpyObj<ConfigService>('ConfigService', {
+      getConfig: of({
+        apiEndpoint: '/api'
+      })
+    });
 
   beforeEach(waitForAsync(() => {
+    mockConfigService = createConfigServiceMock();
+
     TestBed.configureTestingModule({
-      imports: [BasicTestModule, FormsModule, ReactiveFormsModule],
+      imports: [
+        BasicTestModule,
+        FormsModule,
+        ReactiveFormsModule,
+        RouterTestingModule
+      ],
       declarations: [CopyTransformationDialogComponent, ErrorVisualDirective],
       providers: [
         provideMockStore(),
         { provide: MatDialogRef, useValue: {} },
+        {
+          provide: ConfigService,
+          useValue: mockConfigService
+        },
         {
           provide: MAT_DIALOG_DATA,
           useValue: {

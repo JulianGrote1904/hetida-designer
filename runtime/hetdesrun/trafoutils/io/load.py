@@ -10,7 +10,7 @@ from typing import Any
 from uuid import UUID, uuid4
 
 import pandas as pd
-from pydantic import BaseModel, Field, parse_file_as
+from pydantic import BaseModel, Field, StrictInt, StrictStr, parse_file_as
 
 from hetdesrun.component.code_utils import (
     CodeParsingException,
@@ -65,9 +65,7 @@ def get_json_default_value_from_python_object(input_info: dict) -> str | None:
         return None
 
     if "data_type" not in input_info:
-        raise ValueError(
-            "For optional inputs a data type must be provided in the COMPONENT_INFO!"
-        )
+        raise ValueError("For optional inputs a data type must be provided in the COMPONENT_INFO!")
 
     if isinstance(input_info["default_value"], str) and input_info["data_type"] in (
         "STRING",
@@ -83,7 +81,7 @@ def get_json_default_value_from_python_object(input_info: dict) -> str | None:
     return json.dumps(input_info["default_value"])
 
 
-def transformation_revision_from_python_code(code: str) -> Any:
+def transformation_revision_from_python_code(code: str) -> TransformationRevision:  # noqa: PLR0915
     """Get the TransformationRevision as a json-like object from just the Python code
 
     This uses information from the register decorator or a global variable COMPONENT_INFO
@@ -167,10 +165,31 @@ def transformation_revision_from_python_code(code: str) -> Any:
     try:
         test_wiring = WorkflowWiring(**test_wiring_dict)
     except ValueError as error:
-        logger.warning(
-            "The dictionary cannot be parsed as WorkflowWiring:\n%s", str(error)
-        )
+        logger.warning("The dictionary cannot be parsed as WorkflowWiring:\n%s", str(error))
         test_wiring = WorkflowWiring()
+
+    try:
+        release_wiring_dict = get_global_from_code(code, "RELEASE_WIRING", default_value=None)
+    except CodeParsingException as e:
+        msg = (
+            f"Could not parse component code for extracting release wiring:\n{str(e)}."
+            " Defaulting to empty wiring (None)"
+        )
+        logging.warning(msg)
+        release_wiring_dict = None
+
+    if release_wiring_dict is not None:
+        if len(release_wiring_dict) == 0:
+            logger.debug("Release wiring extraction result is an empty wiring.")
+
+        try:
+            release_wiring = WorkflowWiring(**release_wiring_dict)
+        except ValueError as error:
+            logger.warning("The dictionary cannot be parsed as WorkflowWiring:\n%s", str(error))
+            release_wiring = None
+
+    else:
+        release_wiring = None
 
     transformation_revision = TransformationRevision(
         **component_info_dict,
@@ -191,8 +210,7 @@ def transformation_revision_from_python_code(code: str) -> Any:
                     value=get_json_default_value_from_python_object(input_info),
                     type=(
                         InputType.OPTIONAL
-                        if isinstance(input_info, dict)
-                        and "default_value" in input_info
+                        if isinstance(input_info, dict) and "default_value" in input_info
                         else InputType.REQUIRED
                     ),
                 )
@@ -215,11 +233,10 @@ def transformation_revision_from_python_code(code: str) -> Any:
         ),
         content=code,
         test_wiring=test_wiring,
+        release_wiring=release_wiring,
     )
 
-    tr_json = json.loads(transformation_revision.json())
-
-    return tr_json
+    return transformation_revision
 
 
 def load_transformation_revisions_from_directory(  # noqa: PLR0912
@@ -244,9 +261,7 @@ def load_transformation_revisions_from_directory(  # noqa: PLR0912
                 python_code = load_python_file(path)
                 if python_code is not None:
                     try:
-                        transformation_json = transformation_revision_from_python_code(
-                            python_code
-                        )
+                        transformation = transformation_revision_from_python_code(python_code)
                     except ComponentCodeImportError as e:
                         logging.error(
                             "Could not load main function from %s\n"
@@ -254,27 +269,27 @@ def load_transformation_revisions_from_directory(  # noqa: PLR0912
                             path,
                             str(e),
                         )
+                        continue
 
             if ext == ".json":
                 logger.info("Loading transformation from json file %s", path)
                 transformation_json = load_json(path)
-            try:
-                transformation = TransformationRevision(**transformation_json)
-            except ValueError as err:
-                logger.error(
-                    "ValueError for json from path %s:\n%s", download_path, str(err)
-                )
-            else:
-                transformation_dict[transformation.id] = transformation
-                if ext == ".py":
-                    if transform_py_to_json:
-                        path = save_transformation_into_directory(
-                            transformation_revision=transformation,
-                            directory_path=download_path,
-                        )
-                        path_dict[transformation.id] = path
-                else:
+                try:
+                    transformation = TransformationRevision(**transformation_json)
+                except ValueError as err:
+                    logger.error("ValueError for json from path %s:\n%s", download_path, str(err))
+                    continue
+            transformation_dict[transformation.id] = transformation
+            if ext == ".py":
+                if transform_py_to_json:
+                    path = save_transformation_into_directory(
+                        transformation_revision=transformation,
+                        directory_path=download_path,
+                    )
                     path_dict[transformation.id] = path
+                path_dict[transformation.id] = path
+            else:
+                path_dict[transformation.id] = path
 
     return transformation_dict, path_dict
 
@@ -322,6 +337,50 @@ class MultipleTrafosUpdateConfig(BaseModel):
             "This can be necessary if an adapter used in a test wiring is not "
             "available on this system."
         ),
+    )
+    strip_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Field(
+        set(),
+        description="Remove all input wirings and output wirings from the trafo's"
+        " test wiring with this adapter id. Can be provided multiple times."
+        " In contrast to strip_wirings this allows to"
+        " fine-granulary exclude only those parts of test wirings corresponding to"
+        " adapters which are not present.",
+    )
+    keep_only_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Field(
+        set(),
+        description="In each test wiring keep only the input wirings and output wirings"
+        " with the given adapter id. Can be set multiple times and then only wirings with"
+        " any of the given ids are kept. If not set, this has no effect (use strip_wirings"
+        " if you actually want to remove all wirings in the test wiring). A typical case"
+        " is when you want to only keep the wirings with adapter id direct_provisioning,"
+        " i.e. manual inputs of the test wiring, in order to remove dependencies from"
+        " external adapters not present on the target hetida designer installation.",
+    )
+    strip_release_wirings: bool = Field(
+        False,
+        description=(
+            "Whether release wirings should be removed before importing."
+            "This can be necessary if an adapter used in a release wiring is not "
+            "available on this system."
+        ),
+    )
+    strip_release_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Field(
+        set(),
+        description="Remove all input wirings and output wirings from the trafo's"
+        " release wiring with this adapter id. Can be provided multiple times."
+        " In contrast to strip_release_wirings this allows to"
+        " fine-granulary exclude only those parts of release wirings corresponding to"
+        " adapters which are not present.",
+    )
+    keep_only_release_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Field(
+        set(),
+        description="In each release wiring keep only the input wirings and output wirings"
+        " with the given adapter id. Can be set multiple times and then only wirings with"
+        " any of the given ids are kept. If not set, this has no effect (use strip_release_wirings"
+        " if you actually want to remove all wirings in the release wiring). A typical case"
+        " is when you want to only keep the wirings with adapter id direct_provisioning,"
+        " i.e. manual inputs of the release wiring, in order to remove dependencies from"
+        " external adapters not present on the target hetida designer installation.",
     )
     abort_on_error: bool = Field(
         False,
@@ -410,10 +469,6 @@ def get_import_sources(directory_path: str) -> Iterable[ImportSource]:  # noqa: 
                 config_file=import_source["config_file"],
             )
 
-    return {
-        key: val for key, val in import_sources.items() if val["is_dir"] is not None
-    }
-
 
 class Importable(BaseModel):
     transformation_revisions: list[TransformationRevision]
@@ -433,16 +488,12 @@ def load_import_source(
 
     # Load trafo revisions
     if import_source.is_dir:
-        trafo_revisions_dict, _ = load_transformation_revisions_from_directory(
-            import_source.path
-        )
+        trafo_revisions_dict, _ = load_transformation_revisions_from_directory(import_source.path)
         trafo_revisions = list(trafo_revisions_dict.values())
     else:
         trafo_revisions = load_trafos_from_trafo_list_json_file(import_source.path)
 
-    return Importable(
-        transformation_revisions=trafo_revisions, import_config=import_config
-    )
+    return Importable(transformation_revisions=trafo_revisions, import_config=import_config)
 
 
 def load_import_sources(import_sources: Iterable[ImportSource]) -> list[Importable]:

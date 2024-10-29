@@ -66,9 +66,7 @@ def import_importable(
         raise_on_missing_dependency=raise_on_missing_dependency,
     )
 
-    trafos_to_process_dict = {
-        trafo_rev.id: trafo_rev for trafo_rev in trafos_to_process
-    }
+    trafos_to_process_dict = {trafo_rev.id: trafo_rev for trafo_rev in trafos_to_process}
 
     success_per_trafo: dict[UUID | str, TrafoUpdateProcessSummary] = {
         trafo.id: (
@@ -102,6 +100,11 @@ def import_importable(
                 allow_overwrite_released=multi_import_config.allow_overwrite_released,
                 update_component_code=multi_import_config.update_component_code,
                 strip_wiring=multi_import_config.strip_wirings,
+                strip_wirings_with_adapter_ids=multi_import_config.strip_wirings_with_adapter_ids,
+                keep_only_wirings_with_adapter_ids=multi_import_config.keep_only_wirings_with_adapter_ids,
+                strip_release_wiring=multi_import_config.strip_release_wirings,
+                strip_release_wirings_with_adapter_ids=multi_import_config.strip_release_wirings_with_adapter_ids,
+                keep_only_release_wirings_with_adapter_ids=multi_import_config.keep_only_release_wirings_with_adapter_ids,
             )
 
         except (
@@ -137,8 +140,7 @@ def import_importable(
 
     if multi_import_config.deprecate_older_revisions:
         revision_group_ids = {
-            transformation.revision_group_id
-            for _, transformation in trafos_to_process_dict.items()
+            transformation.revision_group_id for _, transformation in trafos_to_process_dict.items()
         }
         logger.info("deprecate all but latest revision of imported revision groups")
         for revision_group_id in revision_group_ids:
@@ -210,14 +212,11 @@ def import_transformations(
 
     if deprecate_older_revisions:
         revision_group_ids = {
-            transformation.revision_group_id
-            for _, transformation in transformation_dict.items()
+            transformation.revision_group_id for _, transformation in transformation_dict.items()
         }
         logger.info("deprecate all but latest revision of imported revision groups")
         for revision_group_id in revision_group_ids:
-            deprecate_all_but_latest_in_group(
-                revision_group_id, directly_in_db=directly_into_db
-            )
+            deprecate_all_but_latest_in_group(revision_group_id, directly_in_db=directly_into_db)
 
 
 def generate_import_order_file(

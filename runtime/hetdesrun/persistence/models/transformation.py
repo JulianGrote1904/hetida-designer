@@ -3,7 +3,7 @@ import logging
 from typing import cast
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field, ValidationError, validator
+from pydantic import BaseModel, Field, StrictInt, StrictStr, ValidationError, validator
 
 from hetdesrun.models.code import (
     CodeModule,
@@ -107,9 +107,7 @@ def adjust_tr_outputs_to_not_matching_wf_outputs_and_remove_surplus_tr_outputs(
                 str(tr_output.id),
             )
             # TODO: Delete instead of adjust once the frontend has been updated
-            tr_outputs[
-                tr_outputs.index(tr_output)
-            ] = wf_output.to_transformation_output()
+            tr_outputs[tr_outputs.index(tr_output)] = wf_output.to_transformation_output()
         del wf_outputs_by_id[tr_output.id]
 
     for tr_output in remove_tr_outputs:
@@ -202,8 +200,7 @@ class TransformationRevision(BaseModel):
     content: str | WorkflowContent = Field(
         ...,
         description=(
-            "Code as string in case of type COMPONENT, "
-            "WorkflowContent in case of type WORKFLOW."
+            "Code as string in case of type COMPONENT, " "WorkflowContent in case of type WORKFLOW."
         ),
     )
 
@@ -221,6 +218,14 @@ class TransformationRevision(BaseModel):
             "To enable execution the input and output wirings must match "
             "the inputs and outputs of the io_interface, which is validated "
             "in the scope of the execution."
+        ),
+    )
+
+    release_wiring: WorkflowWiring | None = Field(
+        None,
+        description=(
+            "Wiring that is stored during release. This allows to reset to a fixed wiring."
+            " And to use a fixed wiring for dashboarding."
         ),
     )
 
@@ -282,9 +287,7 @@ class TransformationRevision(BaseModel):
         return v
 
     @validator("content")
-    def content_type_correct(
-        cls, v: str | WorkflowContent, values: dict
-    ) -> str | WorkflowContent:
+    def content_type_correct(cls, v: str | WorkflowContent, values: dict) -> str | WorkflowContent:
         try:
             type_ = values["type"]
         except KeyError as error:
@@ -349,9 +352,7 @@ class TransformationRevision(BaseModel):
         return io_interface
 
     @validator("io_interface")
-    def io_interface_no_names_empty(
-        cls, io_interface: IOInterface, values: dict
-    ) -> IOInterface:
+    def io_interface_no_names_empty(cls, io_interface: IOInterface, values: dict) -> IOInterface:
         try:
             state = values["state"]
         except KeyError as error:
@@ -373,11 +374,86 @@ class TransformationRevision(BaseModel):
 
     def release(self) -> None:
         self.released_timestamp = datetime.datetime.now(datetime.timezone.utc)
+        self.release_wiring = self.test_wiring
         self.state = State.RELEASED
 
     def deprecate(self) -> None:
         self.disabled_timestamp = datetime.datetime.now(datetime.timezone.utc)
         self.state = State.DISABLED
+
+    def strip_wirings(
+        self,
+        strip_wiring: bool = False,
+        strip_release_wiring: bool = False,
+        strip_wirings_with_adapter_ids: set[StrictInt | StrictStr] | None = None,
+        keep_only_wirings_with_adapter_ids: set[StrictInt | StrictStr] | None = None,
+        strip_release_wirings_with_adapter_ids: set[StrictInt | StrictStr] | None = None,
+        keep_only_release_wirings_with_adapter_ids: set[StrictInt | StrictStr] | None = None,
+    ) -> None:
+        """Strip wirings as parametrized"""
+        if strip_wirings_with_adapter_ids is None:
+            strip_wirings_with_adapter_ids = set()
+
+        if keep_only_wirings_with_adapter_ids is None:
+            keep_only_wirings_with_adapter_ids = set()
+
+        if strip_release_wirings_with_adapter_ids is None:
+            strip_release_wirings_with_adapter_ids = set()
+
+        if keep_only_release_wirings_with_adapter_ids is None:
+            keep_only_release_wirings_with_adapter_ids = set()
+
+        if strip_wiring:
+            self.test_wiring = WorkflowWiring()
+
+        if strip_release_wiring:
+            self.release_wiring = None
+
+        if len(strip_wirings_with_adapter_ids) != 0:
+            self.test_wiring.input_wirings = [
+                inp_wiring
+                for inp_wiring in self.test_wiring.input_wirings
+                if inp_wiring.adapter_id not in strip_wirings_with_adapter_ids
+            ]
+            self.test_wiring.output_wirings = [
+                outp_wiring
+                for outp_wiring in self.test_wiring.output_wirings
+                if outp_wiring.adapter_id not in strip_wirings_with_adapter_ids
+            ]
+        if len(keep_only_wirings_with_adapter_ids) != 0:
+            self.test_wiring.input_wirings = [
+                inp_wiring
+                for inp_wiring in self.test_wiring.input_wirings
+                if inp_wiring.adapter_id in keep_only_wirings_with_adapter_ids
+            ]
+            self.test_wiring.output_wirings = [
+                outp_wiring
+                for outp_wiring in self.test_wiring.output_wirings
+                if outp_wiring.adapter_id in keep_only_wirings_with_adapter_ids
+            ]
+
+        if len(strip_release_wirings_with_adapter_ids) != 0 and self.release_wiring is not None:
+            self.release_wiring.input_wirings = [
+                inp_wiring
+                for inp_wiring in self.release_wiring.input_wirings
+                if inp_wiring.adapter_id not in strip_release_wirings_with_adapter_ids
+            ]
+            self.release_wiring.output_wirings = [
+                outp_wiring
+                for outp_wiring in self.release_wiring.output_wirings
+                if outp_wiring.adapter_id not in strip_release_wirings_with_adapter_ids
+            ]
+        if len(keep_only_release_wirings_with_adapter_ids) != 0 and self.release_wiring is not None:
+            self.release_wiring.input_wirings = [
+                inp_wiring
+                for inp_wiring in self.release_wiring.input_wirings
+                if inp_wiring.adapter_id in keep_only_release_wirings_with_adapter_ids
+            ]
+            self.release_wiring.output_wirings = [
+                outp_wiring
+                for outp_wiring in self.release_wiring.output_wirings
+                if outp_wiring.adapter_id in keep_only_release_wirings_with_adapter_ids
+            ]
 
     def to_component_revision(self) -> ComponentRevision:
         if self.type != Type.COMPONENT:
@@ -392,9 +468,7 @@ class TransformationRevision(BaseModel):
             code_module_uuid=self.id,
             function_name="main",
             inputs=[inp.to_component_input() for inp in self.io_interface.inputs],
-            outputs=[
-                output.to_component_output() for output in self.io_interface.outputs
-            ],
+            outputs=[output.to_component_output() for output in self.io_interface.outputs],
         )
 
     def to_component_node(self, operator_id: UUID, operator_name: str) -> ComponentNode:
@@ -447,8 +521,7 @@ class TransformationRevision(BaseModel):
             version_tag=self.version_tag,
             transformation_id=self.id,
             inputs=[
-                OperatorInput.from_transformation_input(inp)
-                for inp in self.io_interface.inputs
+                OperatorInput.from_transformation_input(inp) for inp in self.io_interface.inputs
             ],
             outputs=[
                 OperatorOutput.from_transformation_output(output)
@@ -471,11 +544,10 @@ class TransformationRevision(BaseModel):
             workflow_content=cast(WorkflowContent, self.content).dict()
             if self.type is Type.WORKFLOW
             else None,
-            component_code=cast(str, self.content)
-            if self.type is Type.COMPONENT
-            else None,
+            component_code=cast(str, self.content) if self.type is Type.COMPONENT else None,
             io_interface=self.io_interface.dict(),
             test_wiring=self.test_wiring.dict(),
+            release_wiring=self.release_wiring.dict() if self.release_wiring is not None else None,
             released_timestamp=self.released_timestamp,
             disabled_timestamp=self.disabled_timestamp,
         )
@@ -524,22 +596,17 @@ class TransformationRevision(BaseModel):
                 links=links,
             ),
             io_interface=IOInterface(
-                inputs=[
-                    input_connector.to_transformation_input()
-                    for input_connector in wf_inputs
-                ],
+                inputs=[input_connector.to_transformation_input() for input_connector in wf_inputs],
                 outputs=[
-                    output_connector.to_transformation_output()
-                    for output_connector in wf_outputs
+                    output_connector.to_transformation_output() for output_connector in wf_outputs
                 ],
             ),
             test_wiring=self.test_wiring,
+            release_wiring=self.release_wiring,
         )
 
     @classmethod
-    def from_orm_model(
-        cls, orm_model: TransformationRevisionDBModel
-    ) -> "TransformationRevision":
+    def from_orm_model(cls, orm_model: TransformationRevisionDBModel) -> "TransformationRevision":
         try:
             return TransformationRevision(
                 id=orm_model.id,
@@ -556,6 +623,7 @@ class TransformationRevision(BaseModel):
                 else orm_model.component_code,
                 io_interface=orm_model.io_interface,
                 test_wiring=orm_model.test_wiring,
+                release_wiring=orm_model.release_wiring,
                 released_timestamp=orm_model.released_timestamp.replace(
                     tzinfo=datetime.timezone.utc
                 )

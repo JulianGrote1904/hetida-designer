@@ -1,10 +1,9 @@
 import datetime
 import json
 import logging
-import os
 from copy import deepcopy
 from typing import Annotated, Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 import httpx
 from fastapi import (
@@ -14,20 +13,19 @@ from fastapi import (
     HTTPException,
     Path,
     Query,
+    Request,
     Response,
     status,
 )
 from fastapi.responses import HTMLResponse
-from pydantic import HttpUrl
+from pydantic import HttpUrl, StrictInt, StrictStr
 
 from hetdesrun.backend.execution import (
-    ExecByIdInput,
-    ExecLatestByGroupIdInput,
     TrafoExecutionInputValidationError,
     TrafoExecutionNotFoundError,
     TrafoExecutionResultValidationError,
     TrafoExecutionRuntimeConnectionError,
-    execute_transformation_revision,
+    perf_measured_execute_trafo_rev,
 )
 from hetdesrun.backend.models.info import ExecutionResponseFrontendDto
 from hetdesrun.backend.service.dashboarding import (
@@ -37,6 +35,10 @@ from hetdesrun.backend.service.dashboarding import (
     generate_login_dashboard_stub,
     override_timestamps_in_wiring,
 )
+from hetdesrun.backend.service.dashboarding_utils import (
+    DashboardQueryParamValidationError,
+    update_wiring_from_query_parameters,
+)
 from hetdesrun.component.code import expand_code, update_code
 from hetdesrun.exportimport.importing import (
     TrafoUpdateProcessSummary,
@@ -44,8 +46,8 @@ from hetdesrun.exportimport.importing import (
     import_importable,
 )
 from hetdesrun.models.code import NonEmptyValidStr, ValidStr
-from hetdesrun.models.run import PerformanceMeasuredStep
-from hetdesrun.models.wiring import GridstackItemPositioning
+from hetdesrun.models.execution import ExecByIdInput, ExecLatestByGroupIdInput
+from hetdesrun.models.wiring import GridstackItemPositioning, WorkflowWiring
 from hetdesrun.persistence.dbservice.exceptions import DBIntegrityError, DBNotFoundError
 from hetdesrun.persistence.dbservice.revision import (
     delete_single_transformation_revision,
@@ -111,9 +113,7 @@ dashboard_router = HandleTrailingSlashAPIRouter(
     summary="Creates a transformation revision.",
     status_code=status.HTTP_201_CREATED,
     responses={
-        status.HTTP_201_CREATED: {
-            "description": "Successfully created the transformation revision"
-        }
+        status.HTTP_201_CREATED: {"description": "Successfully created the transformation revision"}
     },
 )
 async def create_transformation_revision(
@@ -174,9 +174,7 @@ def change_code(
     summary="Returns combined list of all transformation revisions (components and workflows)",
     status_code=status.HTTP_200_OK,
     responses={
-        status.HTTP_200_OK: {
-            "description": "Successfully got all transformation revisions"
-        }
+        status.HTTP_200_OK: {"description": "Successfully got all transformation revisions"}
     },
 )
 async def get_all_transformation_revisions(
@@ -185,26 +183,24 @@ async def get_all_transformation_revisions(
         None,
         description="Filter for specified type.",
     ),
-    state: State
-    | None = Query(
+    state: State | None = Query(
         None,
         description="Filter for specified state.",
     ),
-    categories: list[ValidStr]
-    | None = Query(
+    categories: list[ValidStr] | None = Query(
         None, description="Filter for specified list of categories.", alias="category"
     ),
-    category_prefix: ValidStr
-    | None = Query(
+    category_prefix: ValidStr | None = Query(
         None,
         description="Category prefix that must be matched exactly (case-sensitive).",
     ),
-    revision_group_id: UUID
-    | None = Query(None, description="Filter for specified revision group id."),
-    ids: list[UUID]
-    | None = Query(None, description="Filter for specified list of ids.", alias="id"),
-    names: list[NonEmptyValidStr]
-    | None = Query(
+    revision_group_id: UUID | None = Query(
+        None, description="Filter for specified revision group id."
+    ),
+    ids: list[UUID] | None = Query(
+        None, description="Filter for specified list of ids.", alias="id"
+    ),
+    names: list[NonEmptyValidStr] | None = Query(
         None, description=("Filter for specified list of names."), alias="name"
     ),
     include_dependencies: bool = Query(
@@ -268,6 +264,78 @@ async def get_all_transformation_revisions(
             " designer instances it is necessary to recreate such serialized objects."
         ),
     ),
+    strip_wirings: bool = Query(
+        False,
+        description=(
+            "Whether test wirings should be completely removed and be replaced"
+            " with an empty test wiring."
+            " Note that expand_component_code needs to be true for this to affect"
+            " the test wiring stored in the component code. In particular if component_as_code"
+            " is true."
+        ),
+    ),
+    strip_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Query(
+        set(),
+        description="Remove all input wirings and output wirings from the trafo's"
+        " test wiring with this adapter id. Can be provided multiple times."
+        " In contrast to strip_wirings this allows to"
+        " fine-granulary exclude only those parts of test wirings corresponding to"
+        " adapters which are not present."
+        " Note that expand_component_code needs to be true for this to affect"
+        " the test wiring stored in the component code. In particular if component_as_code"
+        " is true.",
+        alias="strip_wirings_with_adapter_id",
+    ),
+    keep_only_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Query(
+        set(),
+        description="In each test wiring keep only the input wirings and output wirings"
+        " with the given adapter id. Can be set multiple times and then only wirings with"
+        " any of the given ids are kept. If not set, this has no effect (use strip_wirings"
+        " if you actually want to remove all wirings in the test wiring). A typical case"
+        " is when you want to only keep the wirings with adapter id direct_provisioning,"
+        " i.e. manual inputs of the test wiring, in order to remove dependencies from"
+        " external adapters not present on the target hetida designer installation."
+        " Note that expand_component_code needs to be true for this to affect"
+        " the test wiring stored in the component code. In particular if component_as_code"
+        " is true.",
+        alias="keep_only_wirings_with_adapter_id",
+    ),
+    strip_release_wirings: bool = Query(
+        False,
+        description=(
+            "Whether release wirings should be completely removed and be replaced"
+            " with null."
+            " Note that expand_component_code needs to be true for this to affect"
+            " the release wiring stored in the component code. In particular if component_as_code"
+            " is true."
+        ),
+    ),
+    strip_release_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Query(
+        set(),
+        description="Remove all input wirings and output wirings from the trafo's"
+        " release wiring with this adapter id. Can be provided multiple times."
+        " In contrast to strip_release_wirings this allows to"
+        " fine-granulary exclude only those parts of release wirings corresponding to"
+        " adapters which are not present."
+        " Note that expand_component_code needs to be true for this to affect"
+        " the release wiring stored in the component code. In particular if component_as_code"
+        " is true.",
+        alias="strip_release_wirings_with_adapter_id",
+    ),
+    keep_only_release_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Query(
+        set(),
+        description="In each release wiring keep only the input wirings and output wirings"
+        " with the given adapter id. Can be set multiple times and then only wirings with"
+        " any of the given ids are kept. If not set, this has no effect (use strip_release_wirings"
+        " if you actually want to remove all wirings in the release wiring). A typical case"
+        " is when you want to only keep the wirings with adapter id direct_provisioning,"
+        " i.e. manual inputs of the release wiring, in order to remove dependencies from"
+        " external adapters not present on the target hetida designer installation."
+        " Note that expand_component_code needs to be true for this to affect"
+        " the release wiring stored in the component code. In particular if component_as_code"
+        " is true.",
+        alias="keep_only_wirings_with_adapter_id",
+    ),
 ) -> list[TransformationRevision | str]:
     """Get all transformation revisions from the data base.
 
@@ -295,21 +363,27 @@ async def get_all_transformation_revisions(
     logger.info("get all transformation revisions with %s", repr(filter_params))
 
     try:
-        transformation_revision_list = get_multiple_transformation_revisions(
-            filter_params
-        )
+        transformation_revision_list = get_multiple_transformation_revisions(filter_params)
     except DBIntegrityError as err:
         msg = f"At least one entry in the DB is no valid transformation revision:\n{str(err)}"
         logger.error(msg)
         raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=msg) from err
 
+    for tr in transformation_revision_list:
+        tr.strip_wirings(
+            strip_wiring=strip_wirings,
+            strip_wirings_with_adapter_ids=strip_wirings_with_adapter_ids,
+            keep_only_wirings_with_adapter_ids=keep_only_wirings_with_adapter_ids,
+            strip_release_wiring=strip_release_wirings,
+            strip_release_wirings_with_adapter_ids=strip_release_wirings_with_adapter_ids,
+            keep_only_release_wirings_with_adapter_ids=keep_only_release_wirings_with_adapter_ids,
+        )
+
     code_list: list[str] = []
     component_indices: list[int] = []
 
     component_indices = [
-        index
-        for index, tr in enumerate(transformation_revision_list)
-        if tr.type == Type.COMPONENT
+        index for index, tr in enumerate(transformation_revision_list) if tr.type == Type.COMPONENT
     ]
     component_indices.sort(reverse=True)
 
@@ -336,11 +410,7 @@ async def get_all_transformation_revisions(
     # frontend handles attributes with value null in a different way than missing attributes
     summary="Returns the transformation revision with the given id.",
     status_code=status.HTTP_200_OK,
-    responses={
-        status.HTTP_200_OK: {
-            "description": "Successfully got the transformation revision"
-        }
-    },
+    responses={status.HTTP_200_OK: {"description": "Successfully got the transformation revision"}},
 )
 async def get_transformation_revision_by_id(
     id: UUID = Path(  # noqa: A002
@@ -377,35 +447,31 @@ async def get_transformation_revision_by_id(
     },
 )
 async def update_transformation_revisions(
-    updated_transformation_revisions_and_code_strings: list[
-        TransformationRevision | str
-    ],
+    updated_transformation_revisions_and_code_strings: list[TransformationRevision | str],
     response: Response,
     type: Type  # noqa: A002
     | None = Query(
         None,
         description="Filter for specified type.",
     ),
-    state: State
-    | None = Query(
+    state: State | None = Query(
         None,
         description="Filter for specified state.",
     ),
-    categories: list[ValidStr]
-    | None = Query(
+    categories: list[ValidStr] | None = Query(
         None, description="Filter for specified list of categories.", alias="category"
     ),
-    category_prefix: str
-    | None = Query(
+    category_prefix: str | None = Query(
         None,
         description="Category prefix that must be matched exactly (case-sensitive).",
     ),
-    revision_group_id: UUID
-    | None = Query(None, description="Filter for specified revision group id."),
-    ids: list[UUID]
-    | None = Query(None, description="Filter for specified list of ids.", alias="id"),
-    names: list[NonEmptyValidStr]
-    | None = Query(
+    revision_group_id: UUID | None = Query(
+        None, description="Filter for specified revision group id."
+    ),
+    ids: list[UUID] | None = Query(
+        None, description="Filter for specified list of ids.", alias="id"
+    ),
+    names: list[NonEmptyValidStr] | None = Query(
         None, description=("Filter for specified list of names."), alias="name"
     ),
     release_drafts: bool = Query(
@@ -425,12 +491,8 @@ async def update_transformation_revisions(
             "of the provided trafos that the selected/filtered ones depend on."
         ),
     ),
-    allow_overwrite_released: bool = Query(
-        False, description="Only set to True for deployment."
-    ),
-    update_component_code: bool = Query(
-        True, description="Only set to False for deployment."
-    ),
+    allow_overwrite_released: bool = Query(False, description="Only set to True for deployment."),
+    update_component_code: bool = Query(True, description="Only set to False for deployment."),
     strip_wirings: bool = Query(
         False,
         description=(
@@ -438,6 +500,54 @@ async def update_transformation_revisions(
             "This can be necessary if an adapter used in a test wiring is not "
             "available on this system."
         ),
+    ),
+    strip_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Query(
+        set(),
+        description="Remove all input wirings and output wirings from the trafo's"
+        " test wiring with this adapter id. Can be provided multiple times."
+        " In contrast to strip_wirings this allows to"
+        " fine-granulary exclude only those parts of test wirings corresponding to"
+        " adapters which are not present.",
+        alias="strip_wirings_with_adapter_id",
+    ),
+    keep_only_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Query(
+        set(),
+        description="In each test wiring keep only the input wirings and output wirings"
+        " with the given adapter id. Can be set multiple times and then only wirings with"
+        " any of the given ids are kept. If not set, this has no effect (use strip_wirings"
+        " if you actually want to remove all wirings in the test wiring). A typical case"
+        " is when you want to only keep the wirings with adapter id direct_provisioning,"
+        " i.e. manual inputs of the test wiring, in order to remove dependencies from"
+        " external adapters not present on the target hetida designer installation.",
+        alias="keep_only_wirings_with_adapter_id",
+    ),
+    strip_release_wirings: bool = Query(
+        False,
+        description=(
+            "Whether release wirings should be removed before importing."
+            "This can be necessary if an adapter used in a release wiring is not "
+            "available on this system."
+        ),
+    ),
+    strip_release_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Query(
+        set(),
+        description="Remove all input wirings and output wirings from the trafo's"
+        " release wiring with this adapter id. Can be provided multiple times."
+        " In contrast to strip_release_wirings this allows to"
+        " fine-granulary exclude only those parts of release wirings corresponding to"
+        " adapters which are not present.",
+        alias="strip_release_wirings_with_adapter_id",
+    ),
+    keep_only_release_wirings_with_adapter_ids: set[StrictInt | StrictStr] = Query(
+        set(),
+        description="In each release wiring keep only the input wirings and output wirings"
+        " with the given adapter id. Can be set multiple times and then only wirings with"
+        " any of the given ids are kept. If not set, this has no effect (use strip_release_wirings"
+        " if you actually want to remove all wirings in the release wiring). A typical case"
+        " is when you want to only keep the wirings with adapter id direct_provisioning,"
+        " i.e. manual inputs of the release wiring, in order to remove dependencies from"
+        " external adapters not present on the target hetida designer installation.",
+        alias="keep_only_release_wirings_with_adapter_id",
     ),
     abort_on_error: bool = Query(
         False,
@@ -500,6 +610,11 @@ async def update_transformation_revisions(
         allow_overwrite_released=allow_overwrite_released,
         update_component_code=update_component_code,
         strip_wirings=strip_wirings,
+        strip_wirings_with_adapter_ids=strip_wirings_with_adapter_ids,
+        keep_only_wirings_with_adapter_ids=keep_only_wirings_with_adapter_ids,
+        strip_release_wiring=strip_release_wirings,
+        strip_release_wirings_with_adapter_ids=strip_release_wirings_with_adapter_ids,
+        keep_only_release_wirings_with_adapter_ids=keep_only_release_wirings_with_adapter_ids,
         abort_on_error=abort_on_error,
         deprecate_older_revisions=deprecate_older_revisions,
     )
@@ -569,12 +684,8 @@ async def update_transformation_revisions(
 async def update_transformation_revision(
     id: UUID,  # noqa: A002
     updated_transformation_revision: TransformationRevision,
-    allow_overwrite_released: bool = Query(
-        False, description="Only set to True for deployment"
-    ),
-    update_component_code: bool = Query(
-        True, description="Only set to False for deployment"
-    ),
+    allow_overwrite_released: bool = Query(False, description="Only set to True for deployment"),
+    update_component_code: bool = Query(True, description="Only set to False for deployment"),
     strip_wiring: bool = Query(False, description="Set to True to discard test wiring"),
 ) -> TransformationRevision:
     """Update or store a transformation revision in the database.
@@ -599,13 +710,11 @@ async def update_transformation_revision(
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=msg)
 
     try:
-        persisted_transformation_revision = (
-            update_or_create_single_transformation_revision(
-                updated_transformation_revision,
-                allow_overwrite_released=allow_overwrite_released,
-                update_component_code=update_component_code,
-                strip_wiring=strip_wiring,
-            )
+        persisted_transformation_revision = update_or_create_single_transformation_revision(
+            updated_transformation_revision,
+            allow_overwrite_released=allow_overwrite_released,
+            update_component_code=update_component_code,
+            strip_wiring=strip_wiring,
         )
         logger.info("updated transformation revision %s", id)
     except DBIntegrityError as err:
@@ -673,14 +782,8 @@ async def delete_transformation_revision(
 async def handle_trafo_revision_execution_request(
     exec_by_id: ExecByIdInput,
 ) -> ExecutionResponseFrontendDto:
-    internal_full_measured_step = PerformanceMeasuredStep.create_and_begin(
-        "internal_full"
-    )
-    if exec_by_id.job_id is None:
-        exec_by_id.job_id = uuid4()
-
     try:
-        exec_response = await execute_transformation_revision(exec_by_id)
+        exec_response = await perf_measured_execute_trafo_rev(exec_by_id)
 
     except TrafoExecutionInputValidationError as err:
         msg = f"Could not validate execution input\n{exec_by_id.json(indent=2)}:\n{str(err)}"
@@ -702,10 +805,6 @@ async def handle_trafo_revision_execution_request(
         logger.error(msg)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, detail=msg) from err
 
-    internal_full_measured_step.stop()
-    exec_response.measured_steps.internal_full = internal_full_measured_step
-    if get_config().advanced_performance_measurement_active:
-        exec_response.process_id = os.getpid()
     return exec_response
 
 
@@ -715,9 +814,7 @@ async def handle_trafo_revision_execution_request(
     summary="Executes a transformation revision",
     status_code=status.HTTP_200_OK,
     responses={
-        status.HTTP_200_OK: {
-            "description": "Successfully executed the transformation revision"
-        }
+        status.HTTP_200_OK: {"description": "Successfully executed the transformation revision"}
     },
 )
 async def execute_transformation_revision_endpoint(
@@ -770,9 +867,7 @@ async def send_result_to_callback_url(
         except httpx.HTTPError as http_err:
             # handles both request errors (connection problems)
             # and 4xx and 5xx errors. See https://www.python-httpx.org/exceptions/
-            msg = (
-                f"Failure connecting to callback url ({callback_url}):\n{str(http_err)}"
-            )
+            msg = f"Failure connecting to callback url ({callback_url}):\n{str(http_err)}"
             logger.error(msg)
             # no re-raise reasonable, see comment in execute_and_post function
 
@@ -783,22 +878,20 @@ async def execute_and_post(exec_by_id: ExecByIdInput, callback_url: HttpUrl) -> 
     try:
         try:
             result = await handle_trafo_revision_execution_request(exec_by_id)
-            logger.info("Finished execution with job_id %s", str(exec_by_id.job_id))
+            logger.info("Finished execution with job_id=%s", str(exec_by_id.job_id))
         except HTTPException as http_exc:
             logger.error(
-                "Execution with job id %s as background task failed:\n%s",
+                "Execution with job_id=%s as background task failed:\n%s",
                 str(exec_by_id.job_id),
                 str(http_exc.detail),
             )
             # no re-raise reasonable due to issue mentioned above
         else:
             await send_result_to_callback_url(callback_url, result)
-            logger.info(
-                "Sent result of execution with job_id %s", str(exec_by_id.job_id)
-            )
+            logger.info("Sent result of execution with job_id=%s", str(exec_by_id.job_id))
     except Exception as e:
         logger.error(
-            "An unexpected error occurred during execution with job id %s as background task:\n%s",
+            "An unexpected error occurred during execution with job_id=%s as background task:\n%s",
             str(exec_by_id.job_id),
             str(e),
         )
@@ -835,7 +928,7 @@ async def execute_asynchronous_transformation_revision_endpoint(
     """
     background_tasks.add_task(execute_and_post, exec_by_id, callback_url)
 
-    return {"message": f"Execution request with job id {exec_by_id.job_id} accepted"}
+    return {"message": f"Execution request with job_id={exec_by_id.job_id} accepted"}
 
 
 async def handle_latest_trafo_revision_execution_request(
@@ -887,9 +980,7 @@ async def execute_latest_transformation_revision_endpoint(
     The test wiring will not be updated.
     """
 
-    return await handle_latest_trafo_revision_execution_request(
-        exec_latest_by_group_id_input
-    )
+    return await handle_latest_trafo_revision_execution_request(exec_latest_by_group_id_input)
 
 
 async def execute_latest_and_post(
@@ -903,12 +994,12 @@ async def execute_latest_and_post(
                 exec_latest_by_group_id_input
             )
             logger.info(
-                "Finished execution with job_id %s",
+                "Finished execution with job_id=%s",
                 str(exec_latest_by_group_id_input.job_id),
             )
         except HTTPException as http_exc:
             logger.error(
-                "Execution with job id %s as background task failed:\n%s",
+                "Execution with job_id=%s as background task failed:\n%s",
                 str(exec_latest_by_group_id_input.job_id),
                 str(http_exc.detail),
             )
@@ -921,7 +1012,7 @@ async def execute_latest_and_post(
             )
     except Exception as e:
         logger.error(
-            "An unexpected error occurred during execution with job_id %s as background task:\n%s",
+            "An unexpected error occurred during execution with job_id=%s as background task:\n%s",
             str(exec_latest_by_group_id_input.job_id),
             str(e),
         )
@@ -967,13 +1058,11 @@ async def execute_asynchronous_latest_transformation_revision_endpoint(
 
     The test wiring will not be updated.
     """
-    background_tasks.add_task(
-        execute_latest_and_post, exec_latest_by_group_id_input, callback_url
-    )
+    background_tasks.add_task(execute_latest_and_post, exec_latest_by_group_id_input, callback_url)
 
     return {
         "message": "Execution request for latest revision with "
-        f"job id {exec_latest_by_group_id_input.job_id} accepted"
+        f"job_id={exec_latest_by_group_id_input.job_id} accepted"
     }
 
 
@@ -1003,9 +1092,7 @@ async def update_transformation_dashboard_positioning(
         logger.error(msg)
         raise HTTPException(status.HTTP_404_NOT_FOUND, detail=msg) from err
 
-    transformation_revision.test_wiring.dashboard_positionings = (
-        gridstack_item_positions
-    )
+    transformation_revision.test_wiring.dashboard_positionings = gridstack_item_positions
 
     try:
         update_or_create_single_transformation_revision(
@@ -1040,29 +1127,44 @@ async def update_transformation_dashboard_positioning(
     },
 )
 async def transformation_dashboard(
+    request: Request,
     authenticated: Annotated[bool, Depends(is_authenticated_check_no_abort)],
     id: UUID = Path(  # noqa: A002
         ...,
         examples=[UUID("123e4567-e89b-12d3-a456-426614174000")],
     ),
-    fromTimestamp: datetime.datetime
-    | None = Query(
+    fromTimestamp: datetime.datetime | None = Query(
         None, description="Override from timestamp. Expected to be explicit UTC."
     ),
-    toTimestamp: datetime.datetime
-    | None = Query(
+    toTimestamp: datetime.datetime | None = Query(
         None, description="Override to timestamp. Expected to be explicit UTC."
     ),
-    relNow: str
-    | None = Query(
+    relNow: str | None = Query(
         None,
         description=(
             'Override timerange relative to "now". '
             'E.g. "5min" describes the timerange [now - 5 minutes, now].'
         ),
     ),
-    autoreload: int
-    | None = Query(None, description=("Autoreload interval in seconds")),
+    autoreload: int | None = Query(None, description=("Autoreload interval in seconds")),
+    exposed_inputs: str = Query(
+        "",
+        description=(
+            "Comma-separated list of trafo inputs,"
+            " that should be exposed to be entered/changed manually in the dashboard UI"
+        ),
+    ),
+    use_release_wiring: bool = Query(
+        False,
+        descripton=(
+            "Whether release_wiring should be used as basis instead of the current test_wiring."
+            " Using a released trafo and its fixed release wiring guarantees reproducibility of"
+            " the dashboard view."
+        ),
+    ),
+    locked: bool = Query(
+        False, description="Whether dashboard elements should be draggable and resizable"
+    ),
 ) -> str:
     """Dashboard fed by transformation revision plot outputs
 
@@ -1098,11 +1200,7 @@ async def transformation_dashboard(
         logger.error(msg)
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=msg)
 
-    if (
-        fromTimestamp is not None
-        and toTimestamp is not None
-        and fromTimestamp > toTimestamp
-    ):
+    if fromTimestamp is not None and toTimestamp is not None and fromTimestamp > toTimestamp:
         msg = "fromTimestamp must be <= toTimestamp"
         logger.error(msg)
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=msg)
@@ -1112,13 +1210,13 @@ async def transformation_dashboard(
         logger.error(msg)
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=msg)
 
+    inputs_to_expose = {inp_name for inp_name in exposed_inputs.split(",") if inp_name != ""}
+
     # Calculate override mode
     override_mode: OverrideMode = (
         OverrideMode.Absolute
         if (fromTimestamp is not None)
-        else (
-            OverrideMode.RelativeNow if relNow is not None else OverrideMode.NoOverride
-        )
+        else (OverrideMode.RelativeNow if relNow is not None else OverrideMode.NoOverride)
     )
 
     # obtain transformation revisions (including wiring)
@@ -1134,7 +1232,21 @@ async def transformation_dashboard(
     logger.debug(transformation_revision.json())
 
     # obtain test wiring
-    wiring = deepcopy(transformation_revision.test_wiring)
+    wiring = (
+        deepcopy(transformation_revision.release_wiring)
+        if use_release_wiring
+        else deepcopy(transformation_revision.test_wiring)
+    )
+
+    if wiring is None:
+        wiring = WorkflowWiring()
+
+    try:
+        wiring = update_wiring_from_query_parameters(wiring, request.query_params.items())
+    except DashboardQueryParamValidationError as e:
+        msg = str(e)
+        logger.error(msg)
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, detail=msg) from e
 
     # compute possible override time range setting
     calculated_from_timestamp, calculated_to_timestamp = calculate_timerange_timestamps(
@@ -1143,9 +1255,7 @@ async def transformation_dashboard(
 
     # override timerange if requested:
     if calculated_from_timestamp is not None and calculated_to_timestamp is not None:
-        override_timestamps_in_wiring(
-            wiring, calculated_from_timestamp, calculated_to_timestamp
-        )
+        override_timestamps_in_wiring(wiring, calculated_from_timestamp, calculated_to_timestamp)
 
     # construct execution payload
     exec_by_id: ExecByIdInput = ExecByIdInput(
@@ -1155,17 +1265,21 @@ async def transformation_dashboard(
     )
 
     # execute
-    exec_resp: ExecutionResponseFrontendDto = (
-        await handle_trafo_revision_execution_request(exec_by_id)
+    exec_resp: ExecutionResponseFrontendDto = await handle_trafo_revision_execution_request(
+        exec_by_id
     )
 
     # construct dashboard html response
     return generate_dashboard_html(
         transformation_revision=transformation_revision,
+        actually_used_wiring=wiring,
         exec_resp=exec_resp,
         autoreload=autoreload,
         override_mode=override_mode,
         calculated_from_timestamp=calculated_from_timestamp,
         calculated_to_timestamp=calculated_to_timestamp,
         relNow=relNow,
+        inputs_to_expose=inputs_to_expose,
+        use_release_wiring=use_release_wiring,
+        locked=locked,
     )
