@@ -128,8 +128,7 @@ def create_pacf_plot(
 
     if pd.api.types.is_datetime64_any_dtype(series.index.dtype) is False:
         raise ComponentInputValidationException(
-            "Indices of series must be datetime, but are of type "
-            + str(series.index.dtype),
+            "Indices of series must be datetime, but are of type " + str(series.index.dtype),
             error_code=422,
             invalid_component_inputs=["series"],
         )
@@ -172,9 +171,7 @@ def create_pacf_plot(
 
     # Add traces
     for x in range(len(array[0])):
-        fig.add_scatter(
-            x=(x, x), y=(0, array[0][x]), mode="lines", line_color="#3f3f3f"
-        )
+        fig.add_scatter(x=(x, x), y=(0, array[0][x]), mode="lines", line_color="#3f3f3f")
     fig.add_scatter(
         x=np.arange(len(array[0])),
         y=array[0],

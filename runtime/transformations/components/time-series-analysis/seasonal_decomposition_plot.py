@@ -108,8 +108,7 @@ def decompose_time_series(
 
     if pd.api.types.is_datetime64_any_dtype(series.index.dtype) is False:
         raise ComponentInputValidationException(
-            "Indices of series must be datetime, but are of type "
-            + str(series.index.dtype),
+            "Indices of series must be datetime, but are of type " + str(series.index.dtype),
             error_code="422",
             invalid_component_inputs=["series"],
         )
@@ -145,9 +144,7 @@ def decompose_time_series(
     return decomposed_series
 
 
-def compute_plot_positions(
-    num_y_axes, horizontal_relative_space_per_y_axis=0.06, side="left"
-):
+def compute_plot_positions(num_y_axes, horizontal_relative_space_per_y_axis=0.06, side="left"):
     """
     returns tuple plot_area_x_ratio, y_positions
 
@@ -167,9 +164,7 @@ def compute_plot_positions(
     hor_ratio = horizontal_relative_space_per_y_axis
 
     if num_y_axes * hor_ratio < 0.5:
-        positions = [
-            1 - x * hor_ratio - hor_ratio * (side == "right") for x in range(num_y_axes)
-        ]
+        positions = [1 - x * hor_ratio - hor_ratio * (side == "right") for x in range(num_y_axes)]
         plot_area_x_ratio = 1 - num_y_axes * hor_ratio
 
     else:

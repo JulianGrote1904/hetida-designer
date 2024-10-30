@@ -118,8 +118,7 @@ def resample_time_series_if_needed(series: pd.Series):
         )
     if pd.api.types.is_datetime64_any_dtype(series.index.dtype) is False:
         raise ComponentInputValidationException(
-            "Indices of series must be datetime, but are of type "
-            + str(series.index.dtype),
+            "Indices of series must be datetime, but are of type " + str(series.index.dtype),
             error_code="422",
             invalid_component_inputs=["series"],
         )
@@ -231,9 +230,7 @@ def hyper_tuning_grid_search(
         Optimized type of seasonal component.
     """
     # Parameter validations
-    if seasonal_periods and (
-        not isinstance(seasonal_periods, int) or seasonal_periods <= 0
-    ):
+    if seasonal_periods and (not isinstance(seasonal_periods, int) or seasonal_periods <= 0):
         raise ComponentInputValidationException(
             "`seasonal_periods` must be a positive integer",
             error_code=422,
@@ -450,9 +447,7 @@ def forecast_exponential_smoothing(
     # Forecast
     if series.equals(test):
         in_sample_forecast = np.round(trained_model.fittedvalues, 2)
-        out_of_sample_forecast = np.round(
-            trained_model.forecast(steps=number_of_forecast_steps), 2
-        )
+        out_of_sample_forecast = np.round(trained_model.forecast(steps=number_of_forecast_steps), 2)
     else:
         forecast = trained_model.forecast(steps=number_of_forecast_steps + len(test))
         in_sample_forecast = np.round(forecast[: len(test)], 2)
@@ -465,12 +460,8 @@ def forecast_exponential_smoothing(
     value_before = series.iloc[-1]
     index_before = series.index[-1]
     value_before_series = pd.Series([value_before], index=[index_before])
-    conf_interval_upper_limit = pd.concat(
-        [value_before_series, conf_interval_upper_limit]
-    )
-    conf_interval_lower_limit = pd.concat(
-        [value_before_series, conf_interval_lower_limit]
-    )
+    conf_interval_upper_limit = pd.concat([value_before_series, conf_interval_upper_limit])
+    conf_interval_lower_limit = pd.concat([value_before_series, conf_interval_lower_limit])
 
     # Sort indices
     series = series.sort_index()
@@ -665,9 +656,7 @@ def timeseries_plot_including_predictions(
     )
 
     # Perform the Shapiro-Wilk Test for normality of residuals
-    residuals = sorted(
-        [x - y for x, y in zip(in_sample_forecast.values, test.values, strict=True)]
-    )
+    residuals = sorted([x - y for x, y in zip(in_sample_forecast.values, test.values, strict=True)])
     p_value = np.round(stats.shapiro(residuals)[1], 2)
 
     # Annotations
