@@ -180,6 +180,8 @@ def clean_time_series_by_interpolation(series: pd.Series, min_required_points: i
     series (Pandas Series):
         Cleaned series with no NaN/Inf values.
     """
+    # Coerce non-numeric values to NaN to avoid statsmodels errors on object dtypes
+    series = pd.to_numeric(series, errors="coerce")
     series = series.replace([np.inf, -np.inf], np.nan)
     method = (
         "time" if pd.api.types.is_datetime64_any_dtype(series.index.dtype) else "linear"
@@ -825,10 +827,11 @@ COMPONENT_INFO = {
     "name": "Exponential Smoothing",
     "category": "Time Series Analysis",
     "description": "Exponential Smoothing Plot",
-    "version_tag": "1.0.2",
+    "version_tag": "1.0.1",
     "id": "8c5f6a7e-2b1d-4f6c-9d9e-c7e3b4a2c1d0",
     "revision_group_id": "b1e582b3-b2a8-47a8-a019-e0a0ba0f1d87",
-    "state": "DRAFT",
+    "state": "RELEASED",
+    "released_timestamp": "2025-09-15T12:00:00+00:00",
 }
 
 from hdutils import parse_default_value  # noqa: E402, F401
@@ -864,7 +867,7 @@ def main(
         est_sp = estimate_seasonal_periods_acf(train, acf_threshold=acf_threshold)
         if est_sp is not None and len(train) >= 2 * est_sp:
             seasonal_periods = est_sp
-            seasonal_note = f"Detected season length: {est_sp}"
+            seasonal_note = f"Estimated season length: {est_sp}"
     # Validate seasonal_periods against training length: require >= 2 full seasons
     if seasonal_periods is not None and len(train) < 2 * int(seasonal_periods):
         raise ComponentInputValidationException(
