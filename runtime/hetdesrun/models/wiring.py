@@ -47,6 +47,7 @@ class UriFragmentWiringInfo(BaseModel):
     )
     ref_key: str | None = None
     use_default_value: bool = False
+    attrs: dict[str, Any] | None = None
 
     # When parsed from uri fragment, misspelled fields should be detected:
     model_config = ConfigDict(extra="forbid")
@@ -300,6 +301,22 @@ class InputWiring(BaseModel):
     # component adapter sink execution.
     filters: dict[FilterKey, str | Any | None] = {}
 
+    attrs: dict[str, Any] | None = Field(
+        None,
+        description=(
+            "Additional metadata that should update a attrs attribute of type dict the"
+            " the loaded object after loading. This will be applied using a shallow dict"
+            " update, so its entries may overwrite same-named entries in the attrs dict of"
+            " the object provided by the adapter. This does only work for adapters"
+            " that provide the correct object themself. E.g. It does not work for the"
+            ' direct_provisioning adapter which provides the filter "value" as is (e.g. string)'
+            " and relies on parsing at a later stage in the execution process."
+            " The Virtual Structure adapter allows to set a meta_data attribute"
+            " in virtual sources. Its value is provided as attrs to the actual"
+            " adapter's wiring then."
+        ),
+    )
+
     model_config = ConfigDict(validate_by_alias=True, validate_by_name=True)
 
     @field_validator("adapter_id")
@@ -416,6 +433,8 @@ class InputWiring(BaseModel):
                 self.ref_id_type = uri_fragment_info.ref_id_type
             if uri_fragment_info.ref_key is not None and "ref_key" in parsed_fragment:
                 self.ref_key = uri_fragment_info.ref_key
+            if uri_fragment_info.attrs is not None and "attrs" in parsed_fragment:
+                self.attrs = uri_fragment_info.attrs
             if (
                 uri_fragment_info.use_default_value is not None
                 and "use_default_value" in parsed_fragment
