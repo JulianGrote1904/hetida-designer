@@ -1,0 +1,504 @@
+"""Documentation for Moving Time Window Aggregation
+
+# Moving Time Window Aggregation
+
+## Description
+This component calculates window-based aggregations on time windows of fixed size moving over the data with a fixed frequency.
+
+## Inputs
+* **timeseries** (Pandas Series): Series to perform the moving window aggregation on.
+* **aggregator** (String, default value: "mean"): Aggregation function to apply in each window. Must be one of "mean", "median", "min", "max", or "std".
+* **min_periods** (Integer, default value: 1): Minimum number of valid values in a window required to return an aggregation result. If fewer values are present, the result is `NaN`.
+* **window_size** (String, default value: "15min"): Time span of each window. Can be either a Pandas frequency string based on [date offset aliases](https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#timeseries-offset-aliases) or a timedelta string.
+* **window_frequency** (String, default value: "5min"): Time span between window starts. Can be either a Pandas frequency string based on [date offset aliases](https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#timeseries-offset-aliases) or a timedelta string. For directly consecutive, non-overlapping windows set **window_frequency** to the same value as **window_size**.
+* **frequency_offset** (String, default value: "4min"): Offset of the window starts compared to 1970-01-01 00:00:00. Can be either a Pandas frequency string based on [date offset aliases](https://pandas.pydata.org/pandas-docs/stable/user_guide/timeseries.html#timeseries-offset-aliases) or a timedelta string. In most cases no offset is necessary, so this can be set to zero, i.e. "0".
+* **interval_type** (String, default value: "left_closed"): The string must be one of "left_closed", "right_open", "right_closed", "left_closed" "closed", or "open". In case a datapoint is on the left or right edge of a window this option determines if it belongs to that window or not, but potentially a neighbouring window.
+* **label_position** (String, default value: "left"): The string must be either "left", "center", or "right". This option determines which timestamp is provided to represent the window for the corresponding mean in the output time series.
+
+## Outputs
+* **window_values** (Pandas Series): Series with the calculated aggregation values of each window.
+* **window_counts** (Pandas Series): Series with the number of valid (non-NaN) values per window.
+
+## Details
+1. The component checks the configuration and maps `interval_type` to the internal window boundary mode.
+2. It converts the time settings (`window_size`, `window_frequency`, `frequency_offset`) to pandas time objects.
+3. The input series is sorted by timestamp to ensure a stable and deterministic calculation order.
+4. The effective window rhythm is created from frequency and offset, and the relevant window boundaries are determined.
+5. If the settings allow it, a fast `resample` path is used. Otherwise, a `rolling` path is used for the general case.
+6. For each window, the selected `aggregator` (`mean`, `median`, `min`, `max`, `std`) is calculated.
+7. The output labels are shifted to `left`, `center`, or `right` according to `label_position`.
+8. The component returns both the aggregated series (`window_values`) and the number of valid values per window (`window_counts`).
+
+## Examples
+The json input of a typical call of this component is
+```
+{
+    "timeseries": {
+        "2025-12-06 23:17:14+00:00": 14.360453,
+        "2025-12-06 23:18:14+00:00": 14.872439,
+        "2025-12-06 23:19:14+00:00": 15.803046,
+        "2025-12-06 23:20:14+00:00": 13.661063,
+        "2025-12-06 23:21:14+00:00": 14.969653,
+        "2025-12-06 23:22:14+00:00": 13.530460,
+        "2025-12-06 23:23:14+00:00": 14.009814,
+        "2025-12-06 23:24:14+00:00": 13.708907,
+        "2025-12-06 23:25:14+00:00": 15.119281,
+        "2025-12-06 23:26:14+00:00": 15.666053,
+        "2025-12-06 23:27:14+00:00": 15.488811,
+        "2025-12-06 23:28:14+00:00": 15.515572,
+        "2025-12-06 23:29:14+00:00": 14.767891,
+        "2025-12-06 23:30:14+00:00": 13.726783,
+        "2025-12-06 23:31:14+00:00": 14.997352,
+        "2025-12-06 23:32:14+00:00": 13.015161,
+        "2025-12-06 23:33:14+00:00": 15.079884,
+        "2025-12-06 23:34:14+00:00": 15.001638,
+        "2025-12-06 23:35:14+00:00": 16.035476,
+        "2025-12-06 23:36:14+00:00": 14.545874,
+        "2025-12-06 23:37:14+00:00": 13.970260,
+        "2025-12-06 23:38:14+00:00": 15.045999,
+        "2025-12-06 23:39:14+00:00": 13.824304,
+        "2025-12-06 23:40:14+00:00": 13.620449,
+        "2025-12-06 23:41:14+00:00": 15.146005,
+        "2025-12-06 23:42:14+00:00": 14.796941,
+        "2025-12-06 23:43:14+00:00": 17.036046,
+        "2025-12-06 23:44:14+00:00": 14.976151,
+        "2025-12-06 23:45:14+00:00": 14.637615,
+        "2025-12-06 23:46:14+00:00": 15.195011,
+        "2025-12-06 23:47:14+00:00": 14.082022,
+        "2025-12-06 23:48:14+00:00": 15.311653,
+        "2025-12-06 23:49:14+00:00": 15.534084,
+        "2025-12-06 23:50:14+00:00": 15.020099,
+        "2025-12-06 23:51:14+00:00": 14.020416,
+        "2025-12-06 23:52:14+00:00": 13.779699,
+        "2025-12-06 23:53:14+00:00": 14.407253,
+        "2025-12-06 23:54:14+00:00": 15.180839,
+        "2025-12-06 23:55:14+00:00": 14.618573,
+        "2025-12-06 23:56:14+00:00": 14.194774,
+        "2025-12-06 23:57:14+00:00": 14.653221,
+        "2025-12-06 23:58:14+00:00": 14.911146,
+        "2025-12-06 23:59:14+00:00": 14.951289,
+        "2025-12-07 00:00:14+00:00": 15.005731,
+        "2025-12-07 00:01:14+00:00": 15.708401,
+        "2025-12-07 00:02:14+00:00": 13.605439,
+        "2025-12-07 00:03:14+00:00": 14.620927,
+        "2025-12-07 00:04:14+00:00": 15.181250,
+        "2025-12-07 00:05:14+00:00": 13.912724,
+        "2025-12-07 00:06:14+00:00": 14.060204
+    },
+    "window_size": "15min",
+    "window_frequency": "5min",
+    "frequency_offset": "4min",
+    "interval_type": "left_closed",
+    "aggregator": "mean",
+    "min_periods": 1,
+    "label_position": "left"
+}
+```
+The expected output is
+```
+"window_values": {
+    "2025-12-06T23:14:00.000Z": 14.616446,
+    "2025-12-06T23:19:00.000Z": 14.3948072,
+    "2025-12-06T23:24:00.000Z": 15.0997248,
+    "2025-12-06T23:29:00.000Z": 14.3174142,
+    "2025-12-06T23:34:00.000Z": 14.9198494,
+    "2025-12-06T23:39:00.000Z": 14.884749,
+    "2025-12-06T23:44:00.000Z": 14.8404904,
+    "2025-12-06T23:49:00.000Z": 14.5523102,
+    "2025-12-06T23:54:00.000Z": 14.7117106,
+    "2025-12-06T23:59:00.000Z": 14.7783574,
+    "2025-12-07T00:04:00.000Z": 14.384726
+},
+"window_counts": {
+    "2025-12-06T23:14:00.000Z": 2,
+    "2025-12-06T23:19:00.000Z": 5,
+    "2025-12-06T23:24:00.000Z": 5,
+    "2025-12-06T23:29:00.000Z": 5,
+    "2025-12-06T23:34:00.000Z": 5,
+    "2025-12-06T23:39:00.000Z": 5,
+    "2025-12-06T23:44:00.000Z": 5,
+    "2025-12-06T23:49:00.000Z": 5,
+    "2025-12-06T23:54:00.000Z": 5,
+    "2025-12-06T23:59:00.000Z": 5,
+    "2025-12-07T00:04:00.000Z": 5
+}
+```
+"""
+
+from typing import Literal
+import pandas as pd
+
+
+def freqstr2dateoffset(freqstr: str) -> pd.DateOffset:
+    """Transform frequency string to Pandas DateOffset."""
+    return pd.tseries.frequencies.to_offset(freqstr)
+
+
+def freqstr2timedelta(freqstr: str) -> pd.Timedelta:
+    """Transform frequency string to Pandas Timedelta."""
+    try:
+        return pd.to_timedelta(freqstr)
+    except ValueError:
+        return pd.to_timedelta(freqstr2dateoffset(freqstr))
+
+
+def shift_timestamp_to_the_left_onto_rhythm(
+    timestamp: pd.Timestamp,
+    window_frequency: pd.DateOffset,
+    frequency_offset: pd.Timedelta,
+) -> pd.Timestamp:
+    """Shift a timestamp to the left in the rhythm.
+
+    The parameters window_frequency and frequency_offset define a kind of "rhythm".
+    For example a window_frequency of "5min" and a frequency_offset of "1min" define the
+    rhythm which contains all timestamps, where the minutes are 01, 06, 11, 16, and so on.
+    The provided timestamp is shifted to the left onto the closest timestamp of this rhythm.
+
+    Conveniently, the Pandas class Timestamp comes with a method `floor`, which is similar to
+    the mathematical method `floor`, but instead of a decimal place takes into account the
+    specified frequency.
+
+    It is not completely obvious how the frequency_offset needs to be taken into account so that the
+    shifted timestamp actually lies in the desired interval:
+        timestamp - window_frequency < shifted <= timestamp
+    so in the following a little proof is provided:
+
+    On the one hand we have:
+        frequency_offset < window_frequency
+        shifted = (timestamp - frequency_offset).floor(freq=window_frequency) + frequency_offset
+    <-> shifted - frequency_offset = (timestamp - frequency_offset).floor(freq=window_frequency)
+                                  <=  timestamp - frequency_offset
+     -> shifted <= timestamp
+
+    On the other hand:
+        shifted - frequency_offset = (timestamp - frequency_offset).floor(freq=window_frequency)
+                                   >  timestamp - frequency_offset - window_frequency
+     -> shifted > timestamp - window_frequency
+    """
+    return (timestamp - frequency_offset).floor(
+        freq=window_frequency
+    ) + frequency_offset
+
+
+def shift_timestamp_to_the_right_onto_rhythm(
+    timestamp: pd.Timestamp,
+    window_frequency: pd.DateOffset,
+    frequency_offset: pd.Timedelta,
+) -> pd.Timestamp:
+    """Shift a timestamp to the right in the rhythm.
+
+    The parameters window_frequency and frequency_offset define a kind of "rhythm".
+    The specified timestamp is shifted to the right onto the closest timestamp of this rhythm.
+
+    Conveniently, the Pandas class Timestamp has a method `ceil` that is similar to the
+    mathematical method `ceil`, but instead of a decimal place, it takes into account the
+    specified frequency.
+
+    It is not completely obvious how the frequency_offset must be taken into account so that
+    the shifted timestamp actually lies in the desired interval:
+        timestamp <= shifted < timestamp + window_frequency
+    The proof that the implemented code fulfills this requirement is analogous to the one for
+    `shift_timestamp_to_the_left_in_rhythm`.
+    """
+    return (timestamp - frequency_offset).ceil(freq=window_frequency) + frequency_offset
+
+
+def right_window_edge_from_left_window_edge(
+    left_window_edge: pd.Timestamp, window_size: pd.DateOffset
+) -> pd.Timestamp:
+    return left_window_edge + window_size
+
+
+def determine_right_window_edges(
+    first_index: pd.Timestamp,
+    last_index: pd.Timestamp,
+    window_size: pd.DateOffset,
+    window_frequency: pd.DateOffset,
+    frequency_offset: pd.Timedelta,
+) -> pd.DatetimeIndex:
+    """Determine right window edges of all windows containing first_index and last_index.
+
+    This function determines the right edges of the windows for which the mean shall be calculated.
+
+    The parameters window_frequency and frequency_offset define an endless "rhythm" where left
+    edges of windows should be located. From first_index and last_index the left edges of earliest
+    and latest window containing these timestamps are determined. Using the window_size left window
+    edges are transformed to right window edges. Finally the list of all right window edges is
+    determined and returned.
+
+    The right edges are determined because the Pandas rolling method only offers the possibility to
+    operate on windows that center around the current point or on windows for which the current
+    point is the right edge.
+    """
+    earliest_possible_left_edge_of_window_containing_first_index = (
+        first_index - window_size
+    )
+    first_window_left_edge = shift_timestamp_to_the_right_onto_rhythm(
+        timestamp=earliest_possible_left_edge_of_window_containing_first_index,
+        window_frequency=window_frequency,
+        frequency_offset=frequency_offset,
+    )
+    first_window_right_boundary = right_window_edge_from_left_window_edge(
+        left_window_edge=first_window_left_edge, window_size=window_size
+    )
+
+    latest_possible_left_edge_of_window_containing_last_index = last_index
+    last_window_left_boundary = shift_timestamp_to_the_left_onto_rhythm(
+        timestamp=latest_possible_left_edge_of_window_containing_last_index,
+        window_frequency=window_frequency,
+        frequency_offset=frequency_offset,
+    )
+    last_window_right_boundary = right_window_edge_from_left_window_edge(
+        left_window_edge=last_window_left_boundary, window_size=window_size
+    )
+
+    return pd.date_range(
+        start=first_window_right_boundary,
+        end=last_window_right_boundary,
+        freq=window_frequency,
+        inclusive="both",
+    )
+
+
+def calculate_moving_time_window(
+    timeseries: pd.Series,
+    window_size: pd.DateOffset,
+    window_frequency: pd.DateOffset,
+    frequency_offset: pd.Timedelta,
+    inclusive: Literal[
+        "left_closed", "right_open", "right_closed", "left_open", "closed", "open"
+    ],
+    label_position: Literal["left", "center", "right"],
+    aggregator: Literal["mean", "median", "min", "max", "std"],
+) -> tuple[pd.Series, pd.Series]:
+    """Calculate periodically shifting window aggregates for a constant time window.
+
+    timeseries (Pandas Series): Series to perform the periodically shifting time window
+        calculation on.
+    window_size (Pandas DateOffset): Time span of each window.
+    window_frequency (Pandas DateOffset): Frequency of windows for which the aggregation is calculated,
+        i.e. time delta between the start (or end) of each two consecutive windows.
+        For directly consecutive, non-overlapping windows set window_frequency to the same value as
+        window_size. If the window_frequency is smaller than the window_size the windows will
+        overlap. If the window_frequency is larger than the window_size, their will be gaps between
+        each two successive windows.
+    frequency_offset (Pandas Timedelta): Offset of the window starts compared to
+        1970-01-01 00:00:00. In most cases no offset is necessary, so this can be set to zero,
+        i.e. "0".
+    inclusive (string): The string must be either "left" or "right".
+        In case a datapoint is on the left or right border of a window this option
+        determines if it belongs to that window or not, but potentially a neighbouring window.
+    label_position (string): The string must be either "left", "center", or "right".
+        This option determines which timestamp is provided to represent the window for the
+        corresponding aggregation in the output time series.
+
+    To reduce the runtime, if possible (window_frequency and window_size are identical, the
+    label_position is "left" or "right") the Pandas function resample is used instead of the Pandas
+    function rolling.
+    """
+    timeseries = timeseries.sort_index()
+
+    frequency_offset = frequency_offset % window_frequency
+
+    if window_size == window_frequency and inclusive in ["left", "right"]:
+        # resample is the fastest method, if it can be used
+        resampled = timeseries.resample(
+            rule=window_size,
+            closed=inclusive,
+            label="right",
+            origin="epoch",
+            offset=frequency_offset,
+        )
+        result = getattr(resampled, aggregator)()
+        counts = resampled.count()
+    else:
+        # default label position in rolling is right
+        # left is  not possible, only alternative is center
+        right_window_boundaries = determine_right_window_edges(
+            first_index=timeseries.index[0],
+            last_index=timeseries.index[-1],
+            window_size=window_size,
+            window_frequency=window_frequency,
+            frequency_offset=frequency_offset,
+        )
+
+        reindexed_timeseries = timeseries.reindex(
+            index=right_window_boundaries.union(timeseries.index)
+        )
+
+        rolling_obj = reindexed_timeseries.rolling(window_size.freqstr, closed=inclusive)
+        result = getattr(rolling_obj, aggregator)()
+        counts = rolling_obj.count()
+
+        result = result.reindex(index=right_window_boundaries)
+        counts = counts.reindex(index=right_window_boundaries)
+
+    if label_position == "center":
+        result = result.shift(freq=-pd.to_timedelta(window_size) / 2)
+        counts = counts.shift(freq=-pd.to_timedelta(window_size) / 2)
+    elif label_position == "left":
+        result = result.shift(freq=-pd.to_timedelta(window_size))
+        counts = counts.shift(freq=-pd.to_timedelta(window_size))
+
+    return result, counts
+
+
+def validate_timeseries(timeseries: pd.Series) -> None:
+    if not isinstance(timeseries, pd.Series):
+        raise ValueError("timeseries must be a pandas Series.")
+    if not isinstance(timeseries.index, pd.DatetimeIndex):
+        raise ValueError("timeseries index must be a pandas DatetimeIndex.")
+    if timeseries.empty:
+        raise ValueError("timeseries must not be empty.")
+
+
+def validate_choice(name: str, value: str, allowed_values: set[str]) -> None:
+    if value not in allowed_values:
+        msg = (
+            f"'{value}' is not allowed as input for {name}!\n"
+            "Please use one of the following options instead:\n"
+            + "\n".join(sorted(allowed_values))
+            + "\n"
+        )
+        raise ValueError(msg)
+
+
+def validate_min_periods(min_periods) -> int:
+    if isinstance(min_periods, str):
+        min_periods = min_periods.strip()
+        if not min_periods.isdigit():
+            raise ValueError("min_periods must be a positive integer.")
+        min_periods = int(min_periods)
+    if not isinstance(min_periods, int):
+        raise ValueError("min_periods must be an integer.")
+    if min_periods < 1:
+        raise ValueError("min_periods must be >= 1.")
+    return min_periods
+
+
+def validate_positive_dateoffset(value: pd.DateOffset, name: str) -> None:
+    reference_ts = pd.Timestamp("1970-01-01T00:00:00Z")
+    if not (reference_ts + value > reference_ts):
+        raise ValueError(f"{name} must represent a positive duration.")
+
+
+# ***** DO NOT EDIT LINES BELOW *****
+# These lines may be overwritten if component details or inputs/outputs change.
+COMPONENT_INFO = {
+    "inputs": {
+        "timeseries": {"data_type": "SERIES"},
+        "aggregator": {"data_type": "STRING", "default_value": "mean"},
+        "min_periods": {"data_type": "INT", "default_value": 1},
+        "window_size": {"data_type": "STRING", "default_value": "15min"},
+        "window_frequency": {"data_type": "STRING", "default_value": "5min"},
+        "frequency_offset": {"data_type": "STRING", "default_value": "4min"},
+        "interval_type": {"data_type": "STRING", "default_value": "left_closed"},
+        "label_position": {"data_type": "STRING", "default_value": "left"},
+    },
+    "outputs": {
+        "window_values": {"data_type": "SERIES"},
+        "window_counts": {"data_type": "SERIES"},
+    },
+    "name": "Moving Time Window Aggregation",
+    "category": "Base Components",
+    "description": "Calculate moving time window aggregation values",
+    "version_tag": "1.0.0",
+    "id": "5eb47eed-2f5b-4c52-9287-3d68f3a80268",
+    "revision_group_id": "c54d08e7-46fc-4edb-a571-752dea5665f7",
+    "state": "DRAFT",
+}
+
+from hdutils import parse_default_value  # noqa: E402, F401
+
+
+def main(
+    *,
+    timeseries,
+    aggregator=parse_default_value(COMPONENT_INFO, "aggregator"),
+    min_periods=parse_default_value(COMPONENT_INFO, "min_periods"),
+    window_size=parse_default_value(COMPONENT_INFO, "window_size"),
+    window_frequency=parse_default_value(COMPONENT_INFO, "window_frequency"),
+    frequency_offset=parse_default_value(COMPONENT_INFO, "frequency_offset"),
+    interval_type=parse_default_value(COMPONENT_INFO, "interval_type"),
+    label_position=parse_default_value(COMPONENT_INFO, "label_position"),
+):
+    # entrypoint function for this component
+    # ***** DO NOT EDIT LINES ABOVE *****
+    # write your code here.
+
+    validate_timeseries(timeseries)
+
+    inclusive_string_from_interval_type = {
+        "closed": "both",
+        "open": "neither",
+        "left_closed": "left",
+        "right_open": "left",
+        "right_closed": "right",
+        "left_open": "right",
+    }
+
+    validate_choice(
+        "interval_type", interval_type, set(inclusive_string_from_interval_type.keys())
+    )
+
+    allowed_aggregators = {"mean", "median", "min", "max", "std"}
+    validate_choice("aggregator", aggregator, allowed_aggregators)
+    validate_choice("label_position", label_position, {"left", "center", "right"})
+    min_periods = validate_min_periods(min_periods)
+    window_size_offset = freqstr2dateoffset(window_size)
+    window_frequency_offset = freqstr2dateoffset(window_frequency)
+    frequency_offset_delta = freqstr2timedelta(frequency_offset)
+    validate_positive_dateoffset(window_size_offset, "window_size")
+    validate_positive_dateoffset(window_frequency_offset, "window_frequency")
+
+    window_values, window_counts = calculate_moving_time_window(
+        timeseries=timeseries,
+        window_size=window_size_offset,
+        window_frequency=window_frequency_offset,
+        frequency_offset=frequency_offset_delta,
+        inclusive=inclusive_string_from_interval_type[interval_type],
+        label_position=label_position,
+        aggregator=aggregator,
+    )
+    window_values = window_values.where(window_counts >= min_periods)
+    window_counts = window_counts.fillna(0).astype(int)
+    return {
+        "window_values": window_values,
+        "window_counts": window_counts,
+    }
+
+
+TEST_WIRING_FROM_PY_FILE_IMPORT = {
+    "input_wirings": [
+        {
+            "workflow_input_name": "timeseries",
+            "filters": {
+                "value": '{\n    "2025-12-06 23:17:14+00:00": 14.360453,\n    "2025-12-06 23:18:14+00:00": 14.872439,\n    "2025-12-06 23:19:14+00:00": 15.803046,\n    "2025-12-06 23:20:14+00:00": 13.661063,\n    "2025-12-06 23:21:14+00:00": 14.969653,\n    "2025-12-06 23:22:14+00:00": 13.530460,\n    "2025-12-06 23:23:14+00:00": 14.009814,\n    "2025-12-06 23:24:14+00:00": 13.708907,\n    "2025-12-06 23:25:14+00:00": 15.119281,\n    "2025-12-06 23:26:14+00:00": 15.666053,\n    "2025-12-06 23:27:14+00:00": 15.488811,\n    "2025-12-06 23:28:14+00:00": 15.515572,\n    "2025-12-06 23:29:14+00:00": 14.767891,\n    "2025-12-06 23:30:14+00:00": 13.726783,\n    "2025-12-06 23:31:14+00:00": 14.997352,\n    "2025-12-06 23:32:14+00:00": 13.015161,\n    "2025-12-06 23:33:14+00:00": 15.079884,\n    "2025-12-06 23:34:14+00:00": 15.001638,\n    "2025-12-06 23:35:14+00:00": 16.035476,\n    "2025-12-06 23:36:14+00:00": 14.545874,\n    "2025-12-06 23:37:14+00:00": 13.970260,\n    "2025-12-06 23:38:14+00:00": 15.045999,\n    "2025-12-06 23:39:14+00:00": 13.824304,\n    "2025-12-06 23:40:14+00:00": 13.620449,\n    "2025-12-06 23:41:14+00:00": 15.146005,\n    "2025-12-06 23:42:14+00:00": 14.796941,\n    "2025-12-06 23:43:14+00:00": 17.036046,\n    "2025-12-06 23:44:14+00:00": 14.976151,\n    "2025-12-06 23:45:14+00:00": 14.637615,\n    "2025-12-06 23:46:14+00:00": 15.195011,\n    "2025-12-06 23:47:14+00:00": 14.082022,\n    "2025-12-06 23:48:14+00:00": 15.311653,\n    "2025-12-06 23:49:14+00:00": 15.534084,\n    "2025-12-06 23:50:14+00:00": 15.020099,\n    "2025-12-06 23:51:14+00:00": 14.020416,\n    "2025-12-06 23:52:14+00:00": 13.779699,\n    "2025-12-06 23:53:14+00:00": 14.407253,\n    "2025-12-06 23:54:14+00:00": 15.180839,\n    "2025-12-06 23:55:14+00:00": 14.618573,\n    "2025-12-06 23:56:14+00:00": 14.194774,\n    "2025-12-06 23:57:14+00:00": 14.653221,\n    "2025-12-06 23:58:14+00:00": 14.911146,\n    "2025-12-06 23:59:14+00:00": 14.951289,\n    "2025-12-07 00:00:14+00:00": 15.005731,\n    "2025-12-07 00:01:14+00:00": 15.708401,\n    "2025-12-07 00:02:14+00:00": 13.605439,\n    "2025-12-07 00:03:14+00:00": 14.620927,\n    "2025-12-07 00:04:14+00:00": 15.181250,\n    "2025-12-07 00:05:14+00:00": 13.912724,\n    "2025-12-07 00:06:14+00:00": 14.060204\n}'
+            },
+        },
+        {"workflow_input_name": "aggregator", "filters": {"value": "mean"}},
+        {"workflow_input_name": "min_periods", "filters": {"value": "1"}},
+        {"workflow_input_name": "window_size", "filters": {"value": "15min"}},
+        {"workflow_input_name": "window_frequency", "filters": {"value": "5min"}},
+        {"workflow_input_name": "frequency_offset", "filters": {"value": "4min"}},
+        {"workflow_input_name": "interval_type", "filters": {"value": "left_closed"}},
+        {"workflow_input_name": "label_position", "filters": {"value": "left"}},
+    ]
+}
+RELEASE_WIRING = {
+    "input_wirings": [
+        {
+            "workflow_input_name": "timeseries",
+            "filters": {
+                "value": '{\n    "2025-12-06 23:17:14+00:00": 14.360453,\n    "2025-12-06 23:18:14+00:00": 14.872439,\n    "2025-12-06 23:19:14+00:00": 15.803046,\n    "2025-12-06 23:20:14+00:00": 13.661063,\n    "2025-12-06 23:21:14+00:00": 14.969653,\n    "2025-12-06 23:22:14+00:00": 13.530460,\n    "2025-12-06 23:23:14+00:00": 14.009814,\n    "2025-12-06 23:24:14+00:00": 13.708907,\n    "2025-12-06 23:25:14+00:00": 15.119281,\n    "2025-12-06 23:26:14+00:00": 15.666053,\n    "2025-12-06 23:27:14+00:00": 15.488811,\n    "2025-12-06 23:28:14+00:00": 15.515572,\n    "2025-12-06 23:29:14+00:00": 14.767891,\n    "2025-12-06 23:30:14+00:00": 13.726783,\n    "2025-12-06 23:31:14+00:00": 14.997352,\n    "2025-12-06 23:32:14+00:00": 13.015161,\n    "2025-12-06 23:33:14+00:00": 15.079884,\n    "2025-12-06 23:34:14+00:00": 15.001638,\n    "2025-12-06 23:35:14+00:00": 16.035476,\n    "2025-12-06 23:36:14+00:00": 14.545874,\n    "2025-12-06 23:37:14+00:00": 13.970260,\n    "2025-12-06 23:38:14+00:00": 15.045999,\n    "2025-12-06 23:39:14+00:00": 13.824304,\n    "2025-12-06 23:40:14+00:00": 13.620449,\n    "2025-12-06 23:41:14+00:00": 15.146005,\n    "2025-12-06 23:42:14+00:00": 14.796941,\n    "2025-12-06 23:43:14+00:00": 17.036046,\n    "2025-12-06 23:44:14+00:00": 14.976151,\n    "2025-12-06 23:45:14+00:00": 14.637615,\n    "2025-12-06 23:46:14+00:00": 15.195011,\n    "2025-12-06 23:47:14+00:00": 14.082022,\n    "2025-12-06 23:48:14+00:00": 15.311653,\n    "2025-12-06 23:49:14+00:00": 15.534084,\n    "2025-12-06 23:50:14+00:00": 15.020099,\n    "2025-12-06 23:51:14+00:00": 14.020416,\n    "2025-12-06 23:52:14+00:00": 13.779699,\n    "2025-12-06 23:53:14+00:00": 14.407253,\n    "2025-12-06 23:54:14+00:00": 15.180839,\n    "2025-12-06 23:55:14+00:00": 14.618573,\n    "2025-12-06 23:56:14+00:00": 14.194774,\n    "2025-12-06 23:57:14+00:00": 14.653221,\n    "2025-12-06 23:58:14+00:00": 14.911146,\n    "2025-12-06 23:59:14+00:00": 14.951289,\n    "2025-12-07 00:00:14+00:00": 15.005731,\n    "2025-12-07 00:01:14+00:00": 15.708401,\n    "2025-12-07 00:02:14+00:00": 13.605439,\n    "2025-12-07 00:03:14+00:00": 14.620927,\n    "2025-12-07 00:04:14+00:00": 15.181250,\n    "2025-12-07 00:05:14+00:00": 13.912724,\n    "2025-12-07 00:06:14+00:00": 14.060204\n}'
+            },
+        },
+        {"workflow_input_name": "aggregator", "filters": {"value": "mean"}},
+        {"workflow_input_name": "min_periods", "filters": {"value": "1"}},
+        {"workflow_input_name": "window_size", "filters": {"value": "15min"}},
+        {"workflow_input_name": "window_frequency", "filters": {"value": "5min"}},
+        {"workflow_input_name": "frequency_offset", "filters": {"value": "4min"}},
+        {"workflow_input_name": "interval_type", "filters": {"value": "left_closed"}},
+        {"workflow_input_name": "label_position", "filters": {"value": "left"}},
+    ]
+}
