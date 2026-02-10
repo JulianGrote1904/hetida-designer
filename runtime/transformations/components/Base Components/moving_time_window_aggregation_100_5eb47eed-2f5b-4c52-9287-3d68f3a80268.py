@@ -127,6 +127,7 @@ The expected output is
 
 from typing import Literal
 import pandas as pd
+from hdutils import ComponentInputValidationException, parse_default_value
 
 
 def freqstr2dateoffset(freqstr: str) -> pd.DateOffset:
@@ -343,43 +344,128 @@ def calculate_moving_time_window(
     return result, counts
 
 
-def validate_timeseries(timeseries: pd.Series) -> None:
+def validate_inputs(
+    timeseries: pd.Series,
+    aggregator: str,
+    min_periods,
+    window_size: str,
+    window_frequency: str,
+    frequency_offset: str,
+    interval_type: str,
+    label_position: str,
+) -> tuple[int, pd.DateOffset, pd.DateOffset, pd.Timedelta]:
     if not isinstance(timeseries, pd.Series):
-        raise ValueError("timeseries must be a pandas Series.")
-    if not isinstance(timeseries.index, pd.DatetimeIndex):
-        raise ValueError("timeseries index must be a pandas DatetimeIndex.")
-    if timeseries.empty:
-        raise ValueError("timeseries must not be empty.")
-
-
-def validate_choice(name: str, value: str, allowed_values: set[str]) -> None:
-    if value not in allowed_values:
-        msg = (
-            f"'{value}' is not allowed as input for {name}!\n"
-            "Please use one of the following options instead:\n"
-            + "\n".join(sorted(allowed_values))
-            + "\n"
+        raise ComponentInputValidationException(
+            "timeseries must be a pandas Series.",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
         )
-        raise ValueError(msg)
+    if not isinstance(timeseries.index, pd.DatetimeIndex):
+        raise ComponentInputValidationException(
+            "timeseries index must be a pandas DatetimeIndex.",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        )
+    if timeseries.empty:
+        raise ComponentInputValidationException(
+            "timeseries must not be empty.",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        )
 
+    allowed_aggregators = {"mean", "median", "min", "max", "std"}
+    if aggregator not in allowed_aggregators:
+        raise ComponentInputValidationException(
+            "aggregator must be one of: mean, median, min, max, std",
+            error_code="422",
+            invalid_component_inputs=["aggregator"],
+        )
 
-def validate_min_periods(min_periods) -> int:
+    allowed_interval_types = {
+        "closed",
+        "open",
+        "left_closed",
+        "right_open",
+        "right_closed",
+        "left_open",
+    }
+    if interval_type not in allowed_interval_types:
+        raise ComponentInputValidationException(
+            "interval_type must be one of: closed, open, left_closed, right_open, right_closed, left_open",
+            error_code="422",
+            invalid_component_inputs=["interval_type"],
+        )
+
+    if label_position not in {"left", "center", "right"}:
+        raise ComponentInputValidationException(
+            "label_position must be one of: left, center, right",
+            error_code="422",
+            invalid_component_inputs=["label_position"],
+        )
+
     if isinstance(min_periods, str):
         min_periods = min_periods.strip()
         if not min_periods.isdigit():
-            raise ValueError("min_periods must be a positive integer.")
+            raise ComponentInputValidationException(
+                "min_periods must be an integer >= 1.",
+                error_code="422",
+                invalid_component_inputs=["min_periods"],
+            )
         min_periods = int(min_periods)
-    if not isinstance(min_periods, int):
-        raise ValueError("min_periods must be an integer.")
-    if min_periods < 1:
-        raise ValueError("min_periods must be >= 1.")
-    return min_periods
+    if not isinstance(min_periods, int) or min_periods < 1:
+        raise ComponentInputValidationException(
+            "min_periods must be an integer >= 1.",
+            error_code="422",
+            invalid_component_inputs=["min_periods"],
+        )
 
+    try:
+        window_size_offset = freqstr2dateoffset(window_size)
+    except Exception as exc:
+        raise ComponentInputValidationException(
+            "window_size must be a valid positive frequency string.",
+            error_code="422",
+            invalid_component_inputs=["window_size"],
+        ) from exc
 
-def validate_positive_dateoffset(value: pd.DateOffset, name: str) -> None:
+    try:
+        window_frequency_offset = freqstr2dateoffset(window_frequency)
+    except Exception as exc:
+        raise ComponentInputValidationException(
+            "window_frequency must be a valid positive frequency string.",
+            error_code="422",
+            invalid_component_inputs=["window_frequency"],
+        ) from exc
+
+    try:
+        frequency_offset_delta = freqstr2timedelta(frequency_offset)
+    except Exception as exc:
+        raise ComponentInputValidationException(
+            "frequency_offset must be a valid timedelta/frequency string.",
+            error_code="422",
+            invalid_component_inputs=["frequency_offset"],
+        ) from exc
+
     reference_ts = pd.Timestamp("1970-01-01T00:00:00Z")
-    if not (reference_ts + value > reference_ts):
-        raise ValueError(f"{name} must represent a positive duration.")
+    if not (reference_ts + window_size_offset > reference_ts):
+        raise ComponentInputValidationException(
+            "window_size must represent a positive duration.",
+            error_code="422",
+            invalid_component_inputs=["window_size"],
+        )
+    if not (reference_ts + window_frequency_offset > reference_ts):
+        raise ComponentInputValidationException(
+            "window_frequency must represent a positive duration.",
+            error_code="422",
+            invalid_component_inputs=["window_frequency"],
+        )
+
+    return (
+        min_periods,
+        window_size_offset,
+        window_frequency_offset,
+        frequency_offset_delta,
+    )
 
 
 # ***** DO NOT EDIT LINES BELOW *****
@@ -408,9 +494,6 @@ COMPONENT_INFO = {
     "state": "DRAFT",
 }
 
-from hdutils import parse_default_value  # noqa: E402, F401
-
-
 def main(
     *,
     timeseries,
@@ -426,8 +509,6 @@ def main(
     # ***** DO NOT EDIT LINES ABOVE *****
     # write your code here.
 
-    validate_timeseries(timeseries)
-
     inclusive_string_from_interval_type = {
         "closed": "both",
         "open": "neither",
@@ -437,19 +518,21 @@ def main(
         "left_open": "right",
     }
 
-    validate_choice(
-        "interval_type", interval_type, set(inclusive_string_from_interval_type.keys())
+    (
+        min_periods,
+        window_size_offset,
+        window_frequency_offset,
+        frequency_offset_delta,
+    ) = validate_inputs(
+        timeseries=timeseries,
+        aggregator=aggregator,
+        min_periods=min_periods,
+        window_size=window_size,
+        window_frequency=window_frequency,
+        frequency_offset=frequency_offset,
+        interval_type=interval_type,
+        label_position=label_position,
     )
-
-    allowed_aggregators = {"mean", "median", "min", "max", "std"}
-    validate_choice("aggregator", aggregator, allowed_aggregators)
-    validate_choice("label_position", label_position, {"left", "center", "right"})
-    min_periods = validate_min_periods(min_periods)
-    window_size_offset = freqstr2dateoffset(window_size)
-    window_frequency_offset = freqstr2dateoffset(window_frequency)
-    frequency_offset_delta = freqstr2timedelta(frequency_offset)
-    validate_positive_dateoffset(window_size_offset, "window_size")
-    validate_positive_dateoffset(window_frequency_offset, "window_frequency")
 
     window_values, window_counts = calculate_moving_time_window(
         timeseries=timeseries,
