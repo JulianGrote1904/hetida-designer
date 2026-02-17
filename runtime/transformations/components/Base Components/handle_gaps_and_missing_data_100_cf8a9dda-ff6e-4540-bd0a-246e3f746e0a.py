@@ -170,11 +170,23 @@ def validate_inputs(
             error_code="422",
             invalid_component_inputs=["limit_direction"],
         )
+    if not isinstance(min_gap_length, int):
+        raise ComponentInputValidationException(
+            "min_gap_length must be an integer >= 1",
+            error_code="422",
+            invalid_component_inputs=["min_gap_length"],
+        )
     if min_gap_length < 1:
         raise ComponentInputValidationException(
             "min_gap_length must be >= 1",
             error_code="422",
             invalid_component_inputs=["min_gap_length"],
+        )
+    if max_gap_length is not None and not isinstance(max_gap_length, int):
+        raise ComponentInputValidationException(
+            "max_gap_length must be an integer >= min_gap_length or null",
+            error_code="422",
+            invalid_component_inputs=["max_gap_length"],
         )
     if max_gap_length is not None and max_gap_length < min_gap_length:
         raise ComponentInputValidationException(
@@ -344,15 +356,15 @@ def main(
 ):
     # entrypoint function for this component
     # ***** DO NOT EDIT LINES ABOVE *****
-    series = prepare_series(timeseries, resample_to, auto_frequency_determination)
     validate_inputs(
-        series,
+        timeseries,
         mode,
         method,
         limit_direction,
         min_gap_length,
         max_gap_length,
     )
+    series = prepare_series(timeseries, resample_to, auto_frequency_determination)
 
     missing_mask = series.isna()
     gap_lengths_values = gap_lengths(missing_mask)

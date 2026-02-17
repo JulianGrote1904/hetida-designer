@@ -783,6 +783,12 @@ def validate_and_normalize_inputs(
             error_code="422",
             invalid_component_inputs=["timeseries"],
         )
+    if not isinstance(timeseries.index, pd.DatetimeIndex):
+        raise ComponentInputValidationException(
+            "timeseries index must be a pandas DatetimeIndex",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        )
     if not pd.api.types.is_numeric_dtype(timeseries):
         raise ComponentInputValidationException(
             "timeseries values must be numeric",
@@ -845,8 +851,6 @@ def prepare_series(timeseries: pd.Series) -> pd.Series:
 
 
 def calculate_dt_seconds(index: pd.Index) -> pd.Series:
-    if not isinstance(index, pd.DatetimeIndex):
-        return pd.Series(1.0, index=index)
     diffs = index.to_series().diff().dt.total_seconds()
     diffs = diffs.replace(0.0, np.nan)
     return diffs
@@ -1086,12 +1090,9 @@ def main(
 ):
     # entrypoint function for this component
     # ***** DO NOT EDIT LINES ABOVE *****
-    # Step 1: Prepare input series (sort index, merge duplicate timestamps).
-    prepared = prepare_series(timeseries)
-
-    # Step 2: Validate and normalize user inputs.
+    # Step 1: Validate and normalize user inputs.
     threshold_value = validate_and_normalize_inputs(
-        prepared,
+        timeseries,
         method,
         threshold,
         min_consecutive,
@@ -1099,6 +1100,9 @@ def main(
         direction,
     )
     threshold = threshold_value
+
+    # Step 2: Prepare input series (sort index, merge duplicate timestamps).
+    prepared = prepare_series(timeseries)
 
     # Step 3: Optionally smooth the series before jump scoring.
     smoothed = apply_smoothing(prepared, smoothing_before, SMOOTHING_WINDOW)

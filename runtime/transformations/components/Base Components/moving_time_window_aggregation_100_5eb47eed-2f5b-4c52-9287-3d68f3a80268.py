@@ -266,9 +266,7 @@ def calculate_moving_time_window(
     window_size: pd.DateOffset,
     window_frequency: pd.DateOffset,
     frequency_offset: pd.Timedelta,
-    inclusive: Literal[
-        "left_closed", "right_open", "right_closed", "left_open", "closed", "open"
-    ],
+    inclusive: Literal["left", "right", "both", "neither"],
     label_position: Literal["left", "center", "right"],
     aggregator: Literal["mean", "median", "min", "max", "std"],
 ) -> tuple[pd.Series, pd.Series]:
@@ -281,21 +279,21 @@ def calculate_moving_time_window(
         i.e. time delta between the start (or end) of each two consecutive windows.
         For directly consecutive, non-overlapping windows set window_frequency to the same value as
         window_size. If the window_frequency is smaller than the window_size the windows will
-        overlap. If the window_frequency is larger than the window_size, their will be gaps between
+        overlap. If the window_frequency is larger than the window_size, there will be gaps between
         each two successive windows.
     frequency_offset (Pandas Timedelta): Offset of the window starts compared to
         1970-01-01 00:00:00. In most cases no offset is necessary, so this can be set to zero,
         i.e. "0".
-    inclusive (string): The string must be either "left" or "right".
+    inclusive (string): One of "left", "right", "both", or "neither".
         In case a datapoint is on the left or right border of a window this option
         determines if it belongs to that window or not, but potentially a neighbouring window.
     label_position (string): The string must be either "left", "center", or "right".
         This option determines which timestamp is provided to represent the window for the
         corresponding aggregation in the output time series.
 
-    To reduce the runtime, if possible (window_frequency and window_size are identical, the
-    label_position is "left" or "right") the Pandas function resample is used instead of the Pandas
-    function rolling.
+    To reduce the runtime, the Pandas function resample is used when possible
+    (window_frequency and window_size are identical and inclusive is "left" or "right").
+    Otherwise, the Pandas function rolling is used.
     """
     timeseries = timeseries.sort_index()
 
