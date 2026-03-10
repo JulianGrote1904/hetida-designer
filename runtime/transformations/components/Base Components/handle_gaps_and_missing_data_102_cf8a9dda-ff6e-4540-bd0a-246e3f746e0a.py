@@ -4,11 +4,14 @@
 
 ## Description
 Single-point component to detect gaps (missing values and missing timestamps),
-optionally fill them, and return gap masks.
+optionally fill them, and return a corrected series.
 
 ## Inputs
 - **timeseries** (Pandas Series):
     The input time series. Index must be datetime, values numeric.
+    Optional metadata in `timeseries.attrs` is supported:
+    `ref_interval_start_timestamp` / `from` and
+    `ref_interval_end_timestamp` / `to`.
 - **drop_na** (Boolean, default value: False):
     If True, drop all NaN values after optional filling.
 - **mode** (String, default value: "fill"):
@@ -34,10 +37,6 @@ optionally fill them, and return gap masks.
 ## Outputs
 - **corrected_timeseries** (Pandas Series):
     The resulting series (filled/flagged/dropped depending on mode).
-- **gap_mask** (Pandas Series):
-    Boolean series; True where values are still missing after processing.
-- **filled_mask** (Pandas Series):
-    Boolean series; True where values were filled.
 
 ## Details
 1. Sorts the input by time and removes duplicate timestamps (keeps the mean).
@@ -45,8 +44,16 @@ optionally fill them, and return gap masks.
 3. Detects gaps as NaN values and as missing timestamps on the grid.
 4. If resample_to is set, it takes precedence over auto-frequency detection.
 5. Optionally infers a regular grid from the median time difference.
-6. Fills only gaps within the configured length limits.
-7. Returns the processed series and masks.
+6. Optionally extends/restricts the grid to the reference interval from
+   metadata (`ref_interval_start_timestamp`/`from`,
+   `ref_interval_end_timestamp`/`to`).
+   If metadata provides `ref_data_frequency` (and optionally
+   `ref_data_frequency_offset`), these values are preferred for grid building.
+   If interval boundaries are not aligned to the detected grid, boundaries are
+   snapped to the nearest inner grid points while preserving the original
+   timestamp phase of the series.
+7. Fills only gaps within the configured length limits.
+8. Returns the processed series.
 
 ## Example
 ```json
@@ -227,30 +234,165 @@ def gap_lengths(mask: pd.Series) -> pd.Series:
     return mask.groupby(group).transform("sum")
 
 
-def prepare_series(
+def get_reference_interval_from_series_attrs(
     series: pd.Series,
+) -> tuple[pd.Timestamp | None, pd.Timestamp | None]:
+    """Read optional interval boundaries from series metadata.
+
+    Supported keys:
+    - start: ``ref_interval_start_timestamp`` or ``from``
+    - end: ``ref_interval_end_timestamp`` or ``to``
+    """
+
+    attrs = series.attrs if isinstance(series.attrs, dict) else {}
+    dataset_metadata = attrs.get("dataset_metadata")
+
+    start_raw = None
+    end_raw = None
+    if isinstance(dataset_metadata, dict):
+        start_raw = dataset_metadata.get(
+            "ref_interval_start_timestamp", dataset_metadata.get("from")
+        )
+        end_raw = dataset_metadata.get(
+            "ref_interval_end_timestamp", dataset_metadata.get("to")
+        )
+
+    if start_raw is None:
+        start_raw = attrs.get("ref_interval_start_timestamp", attrs.get("from"))
+    if end_raw is None:
+        end_raw = attrs.get("ref_interval_end_timestamp", attrs.get("to"))
+
+    start_ts: pd.Timestamp | None = None
+    end_ts: pd.Timestamp | None = None
+
+    if start_raw is not None:
+        try:
+            start_ts = pd.Timestamp(start_raw)
+        except (TypeError, ValueError) as exc:
+            raise ComponentInputValidationException(
+                "timeseries metadata field 'ref_interval_start_timestamp' (or 'from') is not a valid timestamp",
+                error_code="422",
+                invalid_component_inputs=["timeseries"],
+            ) from exc
+
+    if end_raw is not None:
+        try:
+            end_ts = pd.Timestamp(end_raw)
+        except (TypeError, ValueError) as exc:
+            raise ComponentInputValidationException(
+                "timeseries metadata field 'ref_interval_end_timestamp' (or 'to') is not a valid timestamp",
+                error_code="422",
+                invalid_component_inputs=["timeseries"],
+            ) from exc
+
+    if start_ts is not None and end_ts is not None and start_ts > end_ts:
+        raise ComponentInputValidationException(
+            "timeseries metadata interval is invalid: start is after end",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        )
+
+    return start_ts, end_ts
+
+
+def get_reference_frequency_from_series_attrs(series: pd.Series) -> str | None:
+    """Read optional reference frequency from series metadata."""
+
+    attrs = series.attrs if isinstance(series.attrs, dict) else {}
+    dataset_metadata = attrs.get("dataset_metadata")
+
+    freq_raw = None
+    if isinstance(dataset_metadata, dict):
+        freq_raw = dataset_metadata.get("ref_data_frequency")
+    if freq_raw is None:
+        freq_raw = attrs.get("ref_data_frequency")
+
+    if freq_raw is None:
+        return None
+    if not isinstance(freq_raw, str):
+        raise ComponentInputValidationException(
+            "timeseries metadata field 'ref_data_frequency' must be a frequency string",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        )
+
+    return freq_raw
+
+
+def get_reference_frequency_offset_from_series_attrs(series: pd.Series) -> str | None:
+    """Read optional reference frequency offset from series metadata."""
+
+    attrs = series.attrs if isinstance(series.attrs, dict) else {}
+    dataset_metadata = attrs.get("dataset_metadata")
+
+    offset_raw = None
+    if isinstance(dataset_metadata, dict):
+        offset_raw = dataset_metadata.get("ref_data_frequency_offset")
+    if offset_raw is None:
+        offset_raw = attrs.get("ref_data_frequency_offset")
+
+    if offset_raw is None:
+        return None
+    if not isinstance(offset_raw, str):
+        raise ComponentInputValidationException(
+            "timeseries metadata field 'ref_data_frequency_offset' must be a duration string",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        )
+
+    return offset_raw
+
+
+def build_regular_grid_from_frequency(
+    ordered: pd.Series,
+    frequency: str | pd.Timedelta,
+) -> pd.Series:
+    full_index = pd.date_range(
+        start=ordered.index.min(), end=ordered.index.max(), freq=frequency
+    )
+    return ordered.reindex(full_index)
+
+
+def resolve_frequency_for_window(
+    ordered: pd.Series,
     resample_to: str | None,
     auto_frequency_determination: bool,
-) -> pd.Series:
-    ordered = series.sort_index()
-    if not ordered.index.is_unique:
-        ordered = ordered.groupby(level=0).mean()
+    reference_frequency: str | None,
+) -> tuple[pd.Series, str | pd.Timedelta | None]:
     resample_value = resample_to
     if resample_value is False or resample_value == "":
         resample_value = None
+
     if resample_value:
         try:
-            full_index = pd.date_range(
-                start=ordered.index.min(), end=ordered.index.max(), freq=resample_value
-            )
+            ordered = build_regular_grid_from_frequency(ordered, resample_value)
         except (ValueError, TypeError) as exc:
             raise ComponentInputValidationException(
                 f"resample_to could not be parsed as frequency: {resample_value}",
                 error_code="422",
                 invalid_component_inputs=["resample_to"],
             ) from exc
-        ordered = ordered.reindex(full_index)
-    elif auto_frequency_determination and len(ordered.index) > 1:
+        return ordered, resample_value
+
+    if reference_frequency and len(ordered.index) > 1:
+        try:
+            ref_freq_delta = pd.to_timedelta(reference_frequency)
+        except (TypeError, ValueError) as exc:
+            raise ComponentInputValidationException(
+                "timeseries metadata field 'ref_data_frequency' is not a valid frequency",
+                error_code="422",
+                invalid_component_inputs=["timeseries"],
+            ) from exc
+        if ref_freq_delta <= pd.Timedelta(0):
+            raise ComponentInputValidationException(
+                "timeseries metadata field 'ref_data_frequency' must be positive",
+                error_code="422",
+                invalid_component_inputs=["timeseries"],
+            )
+        ordered = build_regular_grid_from_frequency(ordered, ref_freq_delta)
+        return ordered, ref_freq_delta
+
+    if auto_frequency_determination and len(ordered.index) > 1:
         diffs = ordered.index.to_series().diff().dropna()
         positive_diffs = diffs[diffs > pd.Timedelta(0)]
         if positive_diffs.empty:
@@ -266,11 +408,125 @@ def prepare_series(
                 error_code="422",
                 invalid_component_inputs=["auto_frequency_determination"],
             )
-        full_index = pd.date_range(
-            start=ordered.index.min(), end=ordered.index.max(), freq=inferred
+        ordered = build_regular_grid_from_frequency(ordered, inferred)
+        return ordered, inferred
+
+    return ordered, None
+
+
+def resolve_frequency_delta_for_window(
+    ordered: pd.Series,
+    frequency_for_window: str | pd.Timedelta | None,
+) -> pd.Timedelta:
+    if frequency_for_window is None:
+        diffs = ordered.index.to_series().diff().dropna()
+        positive_diffs = diffs[diffs > pd.Timedelta(0)]
+        if positive_diffs.empty:
+            raise ComponentInputValidationException(
+                "Cannot apply metadata interval without a detectable positive frequency",
+                error_code="422",
+                invalid_component_inputs=["timeseries"],
+            )
+        frequency_for_window = positive_diffs.median()
+
+    try:
+        freq_delta = pd.to_timedelta(frequency_for_window)
+    except (TypeError, ValueError) as exc:
+        raise ComponentInputValidationException(
+            "Cannot apply metadata interval because frequency is not a fixed timedelta",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        ) from exc
+    if freq_delta <= pd.Timedelta(0):
+        raise ComponentInputValidationException(
+            "Cannot apply metadata interval because frequency must be positive",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
         )
-        ordered = ordered.reindex(full_index)
-    return ordered
+    return freq_delta
+
+
+def apply_reference_window_to_series(
+    ordered: pd.Series,
+    window_start: pd.Timestamp | None,
+    window_end: pd.Timestamp | None,
+    reference_frequency_offset: str | None,
+    frequency_for_window: str | pd.Timedelta | None,
+) -> pd.Series:
+    if window_start is None and window_end is None:
+        return ordered
+    if ordered.empty:
+        raise ComponentInputValidationException(
+            "Cannot apply metadata interval to an empty timeseries",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        )
+
+    freq_delta = resolve_frequency_delta_for_window(ordered, frequency_for_window)
+
+    target_start = window_start if window_start is not None else ordered.index.min()
+    target_end = window_end if window_end is not None else ordered.index.max()
+    if target_start > target_end:
+        raise ComponentInputValidationException(
+            "Metadata interval start must be before or equal to end",
+            error_code="422",
+            invalid_component_inputs=["timeseries"],
+        )
+
+    # Keep the original timestamp phase (e.g. full hour) across the whole window.
+    anchor = ordered.index.min()
+    if reference_frequency_offset is not None:
+        try:
+            offset_delta = pd.to_timedelta(reference_frequency_offset)
+        except (TypeError, ValueError) as exc:
+            raise ComponentInputValidationException(
+                "timeseries metadata field 'ref_data_frequency_offset' is not a valid duration",
+                error_code="422",
+                invalid_component_inputs=["timeseries"],
+            ) from exc
+        offset_mod = offset_delta % freq_delta
+        epoch_anchor = pd.Timestamp("1970-01-01", tz=ordered.index.min().tz)
+        anchor = epoch_anchor + offset_mod
+
+    start_steps = int(np.ceil((target_start - anchor) / freq_delta))
+    end_steps = int(np.floor((target_end - anchor) / freq_delta))
+    aligned_start = anchor + start_steps * freq_delta
+    aligned_end = anchor + end_steps * freq_delta
+
+    if aligned_start > aligned_end:
+        return ordered.iloc[0:0]
+
+    full_window_index = pd.date_range(
+        start=aligned_start, end=aligned_end, freq=freq_delta
+    )
+    return ordered.reindex(full_window_index)
+
+
+def prepare_series(
+    series: pd.Series,
+    resample_to: str | None,
+    auto_frequency_determination: bool,
+    reference_frequency: str | None = None,
+    reference_frequency_offset: str | None = None,
+    window_start: pd.Timestamp | None = None,
+    window_end: pd.Timestamp | None = None,
+) -> pd.Series:
+    ordered = series.sort_index()
+    if not ordered.index.is_unique:
+        ordered = ordered.groupby(level=0).mean()
+    ordered, frequency_for_window = resolve_frequency_for_window(
+        ordered,
+        resample_to,
+        auto_frequency_determination,
+        reference_frequency,
+    )
+    return apply_reference_window_to_series(
+        ordered,
+        window_start=window_start,
+        window_end=window_end,
+        reference_frequency_offset=reference_frequency_offset,
+        frequency_for_window=frequency_for_window,
+    )
 
 
 def fill_series(
@@ -315,14 +571,12 @@ COMPONENT_INFO = {
     },
     "outputs": {
         "corrected_timeseries": {"data_type": "SERIES"},
-        "gap_mask": {"data_type": "SERIES"},
-        "filled_mask": {"data_type": "SERIES"},
     },
     "name": "Handle Gaps and Missing Data",
     "category": "Base Components",
-    "description": "Detect and optionally fill gaps in time series, returning masks and events.",
-    "version_tag": "1.0.0",
-    "id": "1791fa22-f749-4145-ab19-ab88576335b2",
+    "description": "Detect and optionally fill gaps in time series.",
+    "version_tag": "1.0.2",
+    "id": "47ed5c98-ebc9-4845-8a8e-a996adc06aa8",
     "revision_group_id": "cf8a9dda-ff6e-4540-bd0a-246e3f746e0a",
     "state": "DRAFT",
 }
@@ -356,7 +610,22 @@ def main(
         resample_to,
         auto_frequency_determination,
     )
-    series = prepare_series(timeseries, resample_to, auto_frequency_determination)
+    ref_interval_start, ref_interval_end = get_reference_interval_from_series_attrs(
+        timeseries
+    )
+    ref_data_frequency = get_reference_frequency_from_series_attrs(timeseries)
+    ref_data_frequency_offset = get_reference_frequency_offset_from_series_attrs(
+        timeseries
+    )
+    series = prepare_series(
+        timeseries,
+        resample_to,
+        auto_frequency_determination,
+        reference_frequency=ref_data_frequency,
+        reference_frequency_offset=ref_data_frequency_offset,
+        window_start=ref_interval_start,
+        window_end=ref_interval_end,
+    )
 
     missing_mask = series.isna()
     gap_lengths_values = gap_lengths(missing_mask)
@@ -378,24 +647,11 @@ def main(
     else:
         processed = series.copy()
 
-    filled_mask = (
-        (fillable_mask & processed.notna())
-        if mode == "fill"
-        else pd.Series(False, index=series.index)
-    )
-    gap_mask = (
-        processed.isna() if mode != "drop" else pd.Series(False, index=processed.index)
-    )
-
     if drop_na and mode != "drop":
         processed = processed.dropna()
-        filled_mask = filled_mask.reindex(processed.index, fill_value=False)
-        gap_mask = gap_mask.reindex(processed.index, fill_value=False)
 
     return {
         "corrected_timeseries": processed,
-        "gap_mask": gap_mask,
-        "filled_mask": filled_mask,
     }
 
 
