@@ -47,10 +47,11 @@ Component to detect jumps in time series data.
 1. The input series is sorted by timestamp, duplicate timestamps are merged by mean.
 2. Optional smoothing is applied to stabilize detection.
 3. A jump score is calculated using the selected method.
-4. The score is compared against either an auto-threshold or a user-defined threshold.
-5. Candidates are filtered by direction, minimum consecutive points, and persistent post-jump behavior.
-6. Remaining candidates are reduced by minimum event distance.
-7. The final jump mask and event table are returned.
+4. Transitions over unusually large time gaps are excluded from jump scoring.
+5. The score is compared against either an auto-threshold or a user-defined threshold.
+6. Candidates are filtered by direction, minimum consecutive points, and persistent post-jump behavior.
+7. Remaining candidates are reduced by minimum event distance.
+8. The final jump mask and event table are returned.
 
 ## Example
 ```json
@@ -753,6 +754,7 @@ PERSISTENCE_TOLERANCE_FACTOR = 1.5
 PERSISTENCE_LOOKBACK_POINTS = 6
 SPIKE_REBOUND_POINTS = 1
 SPIKE_REBOUND_RATIO = 0.6
+MAX_ALLOWED_GAP_FACTOR = 3.0
 
 
 def apply_min_consecutive(mask: pd.Series, min_consecutive: int) -> pd.Series:
@@ -854,6 +856,31 @@ def calculate_dt_seconds(index: pd.Index) -> pd.Series:
     diffs = index.to_series().diff().dt.total_seconds()
     diffs = diffs.replace(0.0, np.nan)
     return diffs
+
+
+def infer_typical_dt_seconds(index: pd.Index) -> float | None:
+    dt_seconds = calculate_dt_seconds(index).dropna()
+    positive_dt_seconds = dt_seconds[dt_seconds > 0]
+    if positive_dt_seconds.empty:
+        return None
+    typical_dt_seconds = float(positive_dt_seconds.median())
+    if not np.isfinite(typical_dt_seconds) or typical_dt_seconds <= 0:
+        return None
+    return typical_dt_seconds
+
+
+def build_large_gap_mask(
+    index: pd.Index,
+    max_allowed_gap_factor: float,
+) -> pd.Series:
+    large_gap_mask = pd.Series(False, index=index)
+    typical_dt_seconds = infer_typical_dt_seconds(index)
+    if typical_dt_seconds is None:
+        return large_gap_mask
+
+    dt_seconds = calculate_dt_seconds(index)
+    gap_limit_seconds = typical_dt_seconds * max_allowed_gap_factor
+    return dt_seconds > gap_limit_seconds
 
 
 def apply_smoothing(
@@ -972,16 +999,31 @@ def filter_persistent_jumps(
     lookback_points: int,
     persistence_points: int,
     tolerance_factor: float,
+    large_gap_mask: pd.Series,
 ) -> pd.Index:
     if len(events_idx) == 0:
         return events_idx
 
+    gap_positions = np.flatnonzero(large_gap_mask.to_numpy(dtype=bool))
     kept: list[pd.Timestamp] = []
     for ts in events_idx:
         pos = int(index_positions.loc[ts])
-        pre_start = max(0, pos - lookback_points)
+
+        previous_gap_positions = gap_positions[gap_positions <= pos]
+        previous_gap_pos = (
+            int(previous_gap_positions[-1]) if len(previous_gap_positions) > 0 else -1
+        )
+        pre_start = max(previous_gap_pos + 1, pos - lookback_points)
         pre_values = series.iloc[pre_start:pos].dropna()
-        post_values = series.iloc[pos + 1 : pos + 1 + persistence_points].dropna()
+
+        next_gap_positions = gap_positions[gap_positions > pos]
+        next_gap_pos = (
+            int(next_gap_positions[0])
+            if len(next_gap_positions) > 0
+            else len(series)
+        )
+        post_end = min(next_gap_pos, pos + 1 + persistence_points)
+        post_values = series.iloc[pos + 1 : post_end].dropna()
 
         if len(pre_values) == 0 or len(post_values) < persistence_points:
             continue
@@ -1002,7 +1044,7 @@ def filter_persistent_jumps(
 
         # Reject short spikes that quickly return near the old level.
         rebound_values = series.iloc[
-            pos + 1 + persistence_points : pos + 1 + 2 * persistence_points
+            pos + 1 + persistence_points : min(next_gap_pos, pos + 1 + 2 * persistence_points)
         ].dropna()
         if len(rebound_values) >= 1:
             returns_to_old = (rebound_values - pre_level).abs() <= tolerance
@@ -1019,6 +1061,8 @@ def detect_threshold_on_derivative(
     threshold: float | None,
 ) -> tuple[pd.Series, float]:
     derivative = calculate_difference_per_second(series)
+    large_gap_mask = build_large_gap_mask(series.index, MAX_ALLOWED_GAP_FACTOR)
+    derivative = derivative.mask(large_gap_mask)
     score = derivative.abs()
     used_threshold = (
         robust_auto_threshold(score) if threshold is None else float(threshold)
@@ -1031,6 +1075,8 @@ def detect_robust_zscore_on_diff(
     threshold: float | None,
 ) -> tuple[pd.Series, pd.Series, float]:
     diff_signal = series.diff()
+    large_gap_mask = build_large_gap_mask(series.index, MAX_ALLOWED_GAP_FACTOR)
+    diff_signal = diff_signal.mask(large_gap_mask)
     med = diff_signal.median()
     mad = (diff_signal - med).abs().median()
     scale = 1.4826 * mad
@@ -1106,6 +1152,7 @@ def main(
 
     # Step 3: Optionally smooth the series before jump scoring.
     smoothed = apply_smoothing(prepared, smoothing_before, SMOOTHING_WINDOW)
+    large_gap_mask = build_large_gap_mask(smoothed.index, MAX_ALLOWED_GAP_FACTOR)
 
     threshold_for_detection = None if threshold_auto else threshold
 
@@ -1154,6 +1201,7 @@ def main(
         PERSISTENCE_LOOKBACK_POINTS,
         PERSISTENCE_POINTS,
         PERSISTENCE_TOLERANCE_FACTOR,
+        large_gap_mask,
     )
 
     # Step 10: Enforce minimum distance and keep strongest nearby event.

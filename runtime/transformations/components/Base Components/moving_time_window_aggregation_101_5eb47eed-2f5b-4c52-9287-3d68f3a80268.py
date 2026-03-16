@@ -40,7 +40,6 @@ over the data in a regular rhythm.
 
 ## Outputs
 * **window_values** (Pandas Series): Series with the calculated aggregation values of each window.
-* **window_counts** (Pandas Series): Series with the number of valid (non-NaN) values per window.
 
 ## Details
 1. The component checks the configuration and maps `interval_type` to the internal window boundary mode.
@@ -55,8 +54,7 @@ over the data in a regular rhythm.
    result is set to `NaN`.
 8. The output labels are placed at the `left`, `center`, or `right` of the
    window according to `label_position`.
-9. The component returns both the aggregated series (`window_values`) and the
-   number of valid values per window (`window_counts`).
+9. The component returns the aggregated series (`window_values`).
 
 ## Examples
 The json input of a typical call of this component is
@@ -140,21 +138,6 @@ The expected output is
     "2025-12-07T00:00:00.000Z": 14.5849537143,
     "2025-12-07T00:05:00.000Z": 13.986464
 },
-"window_counts": {
-    "2025-12-06T23:05:00.000Z": 3,
-    "2025-12-06T23:10:00.000Z": 8,
-    "2025-12-06T23:15:00.000Z": 13,
-    "2025-12-06T23:20:00.000Z": 15,
-    "2025-12-06T23:25:00.000Z": 15,
-    "2025-12-06T23:30:00.000Z": 15,
-    "2025-12-06T23:35:00.000Z": 15,
-    "2025-12-06T23:40:00.000Z": 15,
-    "2025-12-06T23:45:00.000Z": 15,
-    "2025-12-06T23:50:00.000Z": 15,
-    "2025-12-06T23:55:00.000Z": 12,
-    "2025-12-07T00:00:00.000Z": 7,
-    "2025-12-07T00:05:00.000Z": 2
-}
 ```
 """
 
@@ -546,13 +529,12 @@ COMPONENT_INFO = {
     },
     "outputs": {
         "window_values": {"data_type": "SERIES"},
-        "window_counts": {"data_type": "SERIES"},
     },
     "name": "Moving Time Window Aggregation",
     "category": "Base Components",
-    "description": "Calculate moving time window aggregation values",
-    "version_tag": "1.0.0",
-    "id": "5eb47eed-2f5b-4c52-9287-3d68f3a80268",
+    "description": "Calculate moving time window aggregation values.",
+    "version_tag": "1.0.1",
+    "id": "b9c98dd6-6cd7-43be-b2ac-32d729c43652",
     "revision_group_id": "c54d08e7-46fc-4edb-a571-752dea5665f7",
     "state": "DRAFT",
 }
@@ -599,7 +581,7 @@ def main(
     )
 
     # Step 3: Calculate window aggregates and valid-value counts.
-    window_values, window_counts = calculate_moving_time_window(
+    window_values, valid_value_counts = calculate_moving_time_window(
         timeseries=timeseries,
         window_size=window_size_offset,
         window_frequency=window_frequency_offset,
@@ -610,13 +592,11 @@ def main(
     )
 
     # Step 4: Apply the minimum valid-value requirement per window.
-    window_values = window_values.where(window_counts >= min_periods)
+    window_values = window_values.where(valid_value_counts >= min_periods)
 
-    # Step 5: Normalize counts and return both output series.
-    window_counts = window_counts.fillna(0).astype(int)
+    # Step 5: Return the aggregated output series.
     return {
         "window_values": window_values,
-        "window_counts": window_counts,
     }
 
 
