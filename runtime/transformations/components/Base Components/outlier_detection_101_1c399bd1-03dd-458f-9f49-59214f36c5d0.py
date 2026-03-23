@@ -39,9 +39,6 @@ Component to detect outliers using a moving-window median absolute deviation
     unusually low values.
 
 ## Outputs
-- **band_filter_dataframe** (Pandas DataFrame):
-    Data frame containing the original values, the moving band center, the
-    rolling deviation, and the outlier mask.
 - **outlier_mask** (Pandas Series):
     Boolean series. `True` means the datapoint is treated as an outlier.
     `False` means the datapoint stays inside the accepted band.
@@ -61,7 +58,7 @@ Component to detect outliers using a moving-window median absolute deviation
    values, only unusually low values, or both.
 9. If too few datapoints are available in a window, no outlier decision is made
    for that point and the outlier mask is set to `False`.
-10. The component returns both the detailed statistics and the boolean mask.
+10. The component returns the boolean outlier mask.
 
 ## Example
 ```json
@@ -340,53 +337,50 @@ def calculate_band_filter_statistics(
     mad_scaling_factor: float,
     min_band_width_factor: float,
     direction: str,
-) -> tuple[pd.DataFrame, pd.Series]:
-    band_filter_dataframe = series.to_frame(name="values")
+) -> pd.Series:
+    statistics = series.to_frame(name="values")
 
-    band_filter_dataframe["band_center"] = series.rolling(
+    statistics["band_center"] = series.rolling(
         window=window_size,
         min_periods=min_num_datapoints_in_window,
         center=True,
     ).median()
 
-    band_filter_dataframe["rolling_deviation"] = (
-        calculate_rolling_median_absolute_deviation(
-            series=series,
-            mad_scaling_factor=mad_scaling_factor,
-            window_size=window_size,
-            min_num_datapoints_in_window=min_num_datapoints_in_window,
-        )
+    statistics["rolling_deviation"] = calculate_rolling_median_absolute_deviation(
+        series=series,
+        mad_scaling_factor=mad_scaling_factor,
+        window_size=window_size,
+        min_num_datapoints_in_window=min_num_datapoints_in_window,
     )
 
     min_width = (
-        np.median(band_filter_dataframe["rolling_deviation"].dropna())
-        * min_band_width_factor
+        np.median(statistics["rolling_deviation"].dropna()) * min_band_width_factor
     )
-    band_filter_dataframe.loc[
-        band_filter_dataframe["rolling_deviation"] < min_width,
+    statistics.loc[
+        statistics["rolling_deviation"] < min_width,
         "rolling_deviation",
     ] = min_width
 
-    deviation_from_center = series - band_filter_dataframe["band_center"]
+    deviation_from_center = series - statistics["band_center"]
     if direction == "both":
-        band_filter_dataframe["outlier_mask"] = (
-            np.abs(deviation_from_center) > band_filter_dataframe["rolling_deviation"]
+        statistics["outlier_mask"] = (
+            np.abs(deviation_from_center) > statistics["rolling_deviation"]
         )
     elif direction == "high":
-        band_filter_dataframe["outlier_mask"] = (
-            deviation_from_center > band_filter_dataframe["rolling_deviation"]
+        statistics["outlier_mask"] = (
+            deviation_from_center > statistics["rolling_deviation"]
         )
     else:
-        band_filter_dataframe["outlier_mask"] = (
-            deviation_from_center < -band_filter_dataframe["rolling_deviation"]
+        statistics["outlier_mask"] = (
+            deviation_from_center < -statistics["rolling_deviation"]
         )
 
-    band_filter_dataframe.loc[
-        band_filter_dataframe["band_center"].isna(),
+    statistics.loc[
+        statistics["band_center"].isna(),
         "outlier_mask",
     ] = False
 
-    return band_filter_dataframe, band_filter_dataframe["outlier_mask"]
+    return statistics["outlier_mask"]
 
 
 # ***** DO NOT EDIT LINES BELOW *****
@@ -402,14 +396,13 @@ COMPONENT_INFO = {
         "direction": {"data_type": "STRING", "default_value": "both"},
     },
     "outputs": {
-        "band_filter_dataframe": {"data_type": "DATAFRAME"},
         "outlier_mask": {"data_type": "SERIES"},
     },
     "name": "Outlier Detection",
     "category": "Base Components",
     "description": "Detect outliers using a moving-window MAD band filter.",
-    "version_tag": "1.0.0",
-    "id": "95351956-8ce8-418c-b899-a655ded13cf6",
+    "version_tag": "1.0.1",
+    "id": "112382b6-e4e7-43e0-a537-de8fa3223dd0",
     "revision_group_id": "1c399bd1-03dd-458f-9f49-59214f36c5d0",
     "state": "DRAFT",
 }
@@ -452,7 +445,7 @@ def main(
     )
 
     # Step 4: Calculate the moving window band statistics and outlier mask.
-    band_filter_dataframe, outlier_mask = calculate_band_filter_statistics(
+    outlier_mask = calculate_band_filter_statistics(
         series=prepared,
         window_size=effective_window_size,
         min_num_datapoints_in_window=min_num_datapoints_in_window,
@@ -461,9 +454,8 @@ def main(
         direction=direction,
     )
 
-    # Step 5: Return both the detailed statistics and the outlier mask.
+    # Step 5: Return the outlier mask.
     return {
-        "band_filter_dataframe": band_filter_dataframe,
         "outlier_mask": outlier_mask,
     }
 
