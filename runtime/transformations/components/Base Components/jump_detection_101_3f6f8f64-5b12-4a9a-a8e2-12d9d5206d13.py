@@ -12,24 +12,25 @@ Component to detect jumps in time series data.
     Jump detection method. One of "threshold_on_derivative",
     "robust_zscore_on_diff".
     - `threshold_on_derivative`: detects jumps via strong changes between
-      consecutive values.
+      consecutive values. This is the more specialized option.
       Best suited for:
       - clean signals with low noise
       - fast online checks when simple step detection is enough
       - data where jumps appear as clear single-change events
     - `robust_zscore_on_diff`: scores changes robustly against outliers
       (median/MAD), so isolated spikes are less likely to be treated as jumps.
+      This is the recommended default for most users.
       Best suited for:
       - noisy industrial sensor data
       - data with occasional spikes/outliers
       - cases where robust detection is preferred over maximum sensitivity
-- **threshold_auto** (Boolean, default value: True):
-    If True, a robust auto-threshold is used.
-- **threshold** (Float, default value: 0.0):
-    Detection threshold as numeric value. Used only when threshold_auto=False.
-- **min_consecutive** (Integer, default value: 2):
-    Minimum number of consecutive candidate points required to count as a jump.
-    A value of `2` is a pragmatic default to reduce short-lived spikes.
+- **sensitivity** (String, default value: "medium"):
+    Controls how easily jumps are accepted after the internal auto-threshold is
+    calculated.
+    - `low`: stricter detection, usually only clearer and stronger jumps
+    - `medium`: balanced default behavior
+    - `high`: more sensitive detection, so smaller or more borderline jumps
+      are more likely to be accepted
 - **min_distance** (Integer, default value: 2):
     Minimum distance between two events (samples).
 - **direction** (String, default value: "both"):
@@ -39,17 +40,23 @@ Component to detect jumps in time series data.
 
 ## Outputs
 - **jump_mask** (Pandas Series):
-    Boolean mask with detected jump positions.
+    Boolean mask with detected jump positions. A jump is marked at the
+    candidate timestamp where the strong change occurs, but only if the
+    following points confirm a stable new level.
 
 ## Details
 1. The input series is sorted by timestamp, duplicate timestamps are merged by mean.
 2. Optional smoothing is applied to stabilize detection.
 3. A jump score is calculated using the selected method.
-4. Transitions over unusually large time gaps are excluded from jump scoring.
-5. The score is compared against either an auto-threshold or a user-defined threshold.
-6. Candidates are filtered by direction, minimum consecutive points, and persistent post-jump behavior.
-7. Remaining candidates are reduced by minimum event distance.
-8. The final jump mask is returned.
+4. Transitions over unusually large time gaps are excluded from jump scoring,
+   so a jump is not inferred purely across a long data gap.
+5. The score is compared against a robust internally determined threshold that
+   is scaled by `sensitivity`.
+6. Candidates are filtered by direction and persistent post-jump behavior.
+7. A candidate is kept at its original change timestamp, but only if the next
+   few points confirm a sufficiently stable new level.
+8. Remaining candidates are reduced by minimum event distance.
+9. The final jump mask is returned.
 
 ## Example
 ```json
@@ -81,13 +88,43 @@ Component to detect jumps in time series data.
     "2026-03-02T05:00:00Z": 31.2
   },
   "method": "robust_zscore_on_diff",
-  "threshold_auto": true,
-  "threshold": 0.0,
-  "min_consecutive": 2,
+  "sensitivity": "medium",
   "min_distance": 2,
   "direction": "both",
   "smoothing_before": false
 }```
+
+Expected output:
+```json
+{
+  "jump_mask": {
+    "2026-03-01T00:00:00Z": false,
+    "2026-03-01T01:00:00Z": false,
+    "2026-03-01T02:00:00Z": false,
+    "2026-03-01T03:00:00Z": false,
+    "2026-03-01T04:00:00Z": false,
+    "2026-03-01T05:00:00Z": false,
+    "2026-03-01T06:00:00Z": false,
+    "2026-03-01T07:00:00Z": false,
+    "2026-03-01T08:00:00Z": false,
+    "2026-03-01T15:00:00Z": false,
+    "2026-03-01T16:00:00Z": false,
+    "2026-03-01T17:00:00Z": false,
+    "2026-03-01T18:00:00Z": false,
+    "2026-03-01T19:00:00Z": false,
+    "2026-03-01T20:00:00Z": false,
+    "2026-03-01T21:00:00Z": false,
+    "2026-03-01T22:00:00Z": false,
+    "2026-03-01T23:00:00Z": true,
+    "2026-03-02T00:00:00Z": false,
+    "2026-03-02T01:00:00Z": false,
+    "2026-03-02T02:00:00Z": false,
+    "2026-03-02T03:00:00Z": false,
+    "2026-03-02T04:00:00Z": false,
+    "2026-03-02T05:00:00Z": false
+  }
+}
+```
 """
 
 from __future__ import annotations
@@ -105,24 +142,20 @@ PERSISTENCE_LOOKBACK_POINTS = 6
 SPIKE_REBOUND_POINTS = 1
 SPIKE_REBOUND_RATIO = 0.6
 MAX_ALLOWED_GAP_FACTOR = 3.0
-
-
-def apply_min_consecutive(mask: pd.Series, min_consecutive: int) -> pd.Series:
-    if min_consecutive <= 1:
-        return mask
-    group = (mask != mask.shift()).cumsum()
-    lengths = mask.groupby(group).transform("sum")
-    return mask & (lengths >= min_consecutive)
+SENSITIVITY_FACTORS = {
+    "low": 1.25,
+    "medium": 1.0,
+    "high": 0.8,
+}
 
 
 def validate_and_normalize_inputs(
     timeseries: pd.Series,
     method: str,
-    threshold: float | int,
-    min_consecutive: int,
+    sensitivity: str,
     min_distance: int,
     direction: str,
-) -> float:
+) -> None:
     if not isinstance(timeseries, pd.Series):
         raise ComponentInputValidationException(
             "timeseries must be a pandas Series",
@@ -166,33 +199,19 @@ def validate_and_normalize_inputs(
             invalid_component_inputs=["direction"],
         )
 
-    if isinstance(threshold, (int, float)):
-        threshold_value = float(threshold)
-    else:
+    if sensitivity not in SENSITIVITY_FACTORS:
         raise ComponentInputValidationException(
-            "threshold must be a float",
+            f"sensitivity must be one of {sorted(SENSITIVITY_FACTORS)}",
             error_code="422",
-            invalid_component_inputs=["threshold"],
-        )
-    if not np.isfinite(threshold_value) or threshold_value < 0:
-        raise ComponentInputValidationException(
-            "threshold must be a finite float >= 0",
-            error_code="422",
-            invalid_component_inputs=["threshold"],
+            invalid_component_inputs=["sensitivity"],
         )
 
-    for value, input_name in (
-        (min_consecutive, "min_consecutive"),
-        (min_distance, "min_distance"),
-    ):
-        if not isinstance(value, int) or value < 1:
-            raise ComponentInputValidationException(
-                f"{input_name} must be an integer >= 1",
-                error_code="422",
-                invalid_component_inputs=[input_name],
-            )
-
-    return threshold_value
+    if not isinstance(min_distance, int) or min_distance < 1:
+        raise ComponentInputValidationException(
+            "min_distance must be an integer >= 1",
+            error_code="422",
+            invalid_component_inputs=["min_distance"],
+        )
 
 
 def prepare_series(timeseries: pd.Series) -> pd.Series:
@@ -267,6 +286,10 @@ def robust_auto_threshold(score: pd.Series) -> float:
         # We intentionally keep this low and rely on persistence filters afterwards.
         return max(med, float(valid.quantile(0.90)))
     return med + 3.5 * sigma
+
+
+def apply_sensitivity_to_threshold(threshold: float, sensitivity: str) -> float:
+    return float(threshold) * SENSITIVITY_FACTORS[sensitivity]
 
 
 def passes_direction(magnitude: float, direction: str) -> bool:
@@ -407,21 +430,21 @@ def filter_persistent_jumps(
 
 def detect_threshold_on_derivative(
     series: pd.Series,
-    threshold: float | None,
+    sensitivity: str,
 ) -> tuple[pd.Series, float]:
     derivative = calculate_difference_per_second(series)
     large_gap_mask = build_large_gap_mask(series.index, MAX_ALLOWED_GAP_FACTOR)
     derivative = derivative.mask(large_gap_mask)
     score = derivative.abs()
-    used_threshold = (
-        robust_auto_threshold(score) if threshold is None else float(threshold)
+    used_threshold = apply_sensitivity_to_threshold(
+        robust_auto_threshold(score), sensitivity
     )
     return score, used_threshold
 
 
 def detect_robust_zscore_on_diff(
     series: pd.Series,
-    threshold: float | None,
+    sensitivity: str,
 ) -> tuple[pd.Series, pd.Series, float]:
     diff_signal = series.diff()
     large_gap_mask = build_large_gap_mask(series.index, MAX_ALLOWED_GAP_FACTOR)
@@ -436,8 +459,8 @@ def detect_robust_zscore_on_diff(
     else:
         z = (diff_signal - med) / scale
     score = z.abs()
-    used_threshold = (
-        robust_auto_threshold(score) if threshold is None else float(threshold)
+    used_threshold = apply_sensitivity_to_threshold(
+        robust_auto_threshold(score), sensitivity
     )
     return score, diff_signal, used_threshold
 
@@ -451,9 +474,7 @@ COMPONENT_INFO = {
             "data_type": "STRING",
             "default_value": "robust_zscore_on_diff",
         },
-        "threshold_auto": {"data_type": "BOOLEAN", "default_value": True},
-        "threshold": {"data_type": "FLOAT", "default_value": 0.0},
-        "min_consecutive": {"data_type": "INT", "default_value": 2},
+        "sensitivity": {"data_type": "STRING", "default_value": "medium"},
         "min_distance": {"data_type": "INT", "default_value": 2},
         "direction": {"data_type": "STRING", "default_value": "both"},
         "smoothing_before": {"data_type": "BOOLEAN", "default_value": False},
@@ -475,9 +496,7 @@ def main(
     *,
     timeseries,
     method=parse_default_value(COMPONENT_INFO, "method"),
-    threshold_auto=parse_default_value(COMPONENT_INFO, "threshold_auto"),
-    threshold=parse_default_value(COMPONENT_INFO, "threshold"),
-    min_consecutive=parse_default_value(COMPONENT_INFO, "min_consecutive"),
+    sensitivity=parse_default_value(COMPONENT_INFO, "sensitivity"),
     min_distance=parse_default_value(COMPONENT_INFO, "min_distance"),
     direction=parse_default_value(COMPONENT_INFO, "direction"),
     smoothing_before=parse_default_value(COMPONENT_INFO, "smoothing_before"),
@@ -485,15 +504,13 @@ def main(
     # entrypoint function for this component
     # ***** DO NOT EDIT LINES ABOVE *****
     # Step 1: Validate and normalize user inputs.
-    threshold_value = validate_and_normalize_inputs(
+    validate_and_normalize_inputs(
         timeseries,
         method,
-        threshold,
-        min_consecutive,
+        sensitivity,
         min_distance,
         direction,
     )
-    threshold = threshold_value
 
     # Step 2: Prepare input series (sort index, merge duplicate timestamps).
     prepared = prepare_series(timeseries)
@@ -502,17 +519,13 @@ def main(
     smoothed = apply_smoothing(prepared, smoothing_before, SMOOTHING_WINDOW)
     large_gap_mask = build_large_gap_mask(smoothed.index, MAX_ALLOWED_GAP_FACTOR)
 
-    threshold_for_detection = None if threshold_auto else threshold
-
     # Step 4: Calculate score and magnitudes for the selected method.
     if method == "threshold_on_derivative":
-        score, used_threshold = detect_threshold_on_derivative(
-            smoothed, threshold_for_detection
-        )
+        score, used_threshold = detect_threshold_on_derivative(smoothed, sensitivity)
         magnitudes = calculate_difference_per_second(smoothed)
     else:
         score, diff_signal, used_threshold = detect_robust_zscore_on_diff(
-            smoothed, threshold_for_detection
+            smoothed, sensitivity
         )
         magnitudes = diff_signal
 
@@ -527,8 +540,7 @@ def main(
         )
         candidate_mask = candidate_mask & direction_mask
 
-    # Step 7: Keep only candidate runs with the configured minimum length.
-    candidate_mask = apply_min_consecutive(candidate_mask, min_consecutive)
+    # Step 7: Convert surviving candidates into candidate timestamps.
     candidate_index = candidate_mask[candidate_mask].index
     positions = pd.Series(np.arange(len(smoothed.index)), index=smoothed.index)
 

@@ -12,8 +12,6 @@ optionally fill them, and return a corrected series.
     Optional metadata in `timeseries.attrs` is supported:
     `ref_interval_start_timestamp` / `from` and
     `ref_interval_end_timestamp` / `to`.
-- **drop_na** (Boolean, default value: False):
-    If True, drop all NaN values after optional filling.
 - **mode** (String, default value: "fill"):
     One of "fill", "flag", "drop".
 - **method** (String, default value: "time"):
@@ -556,7 +554,6 @@ def fill_series(
 COMPONENT_INFO = {
     "inputs": {
         "timeseries": {"data_type": "SERIES"},
-        "drop_na": {"data_type": "BOOLEAN", "default_value": False},
         "mode": {"data_type": "STRING", "default_value": "fill"},
         "method": {"data_type": "STRING", "default_value": "time"},
         "limit_direction": {"data_type": "STRING", "default_value": "both"},
@@ -585,7 +582,6 @@ COMPONENT_INFO = {
 def main(
     *,
     timeseries,
-    drop_na=parse_default_value(COMPONENT_INFO, "drop_na"),
     mode=parse_default_value(COMPONENT_INFO, "mode"),
     method=parse_default_value(COMPONENT_INFO, "method"),
     limit_direction=parse_default_value(COMPONENT_INFO, "limit_direction"),
@@ -646,9 +642,6 @@ def main(
         processed = processed.dropna()
     else:
         processed = series.copy()
-
-    if drop_na and mode != "drop":
-        processed = processed.dropna()
 
     return {
         "corrected_timeseries": processed,
